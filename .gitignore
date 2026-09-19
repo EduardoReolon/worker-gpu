@@ -1,0 +1,22 @@
+# Ambiente
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+
+# Segredos e configuracao da maquina. O `.env.example` TEM que ser versionado,
+# e um padrao `.env*` o engoliria junto — foi assim que um exemplo com o
+# endereco errado sobreviveu meses.
+.env
+.env.local
+
+# Saida dos medidores: imagens e tempos desta maquina, que nao dizem nada
+# sobre outra.
+medicoes/
+
+# Cache de modelo, quando alguem aponta o HF_HOME para ca.
+.model_cache/
+
+# Caches de ferramenta.
+.ruff_cache/
+.pytest_cache/

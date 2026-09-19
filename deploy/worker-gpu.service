@@ -1,0 +1,50 @@
+# Molde, nao arquivo pronto: os marcadores em caixa alta abaixo sao trocados
+# pelo `instalar.sh`. Um caminho fixo aqui estaria errado em toda maquina
+# menos uma.
+#
+#   ./deploy/instalar.sh              unit de usuario (systemctl --user)
+#   ./deploy/instalar.sh --sistema    unit de sistema (precisa de sudo)
+#
+# Nao edite a copia instalada: ela e reescrita a cada `instalar.sh`. O que
+# muda de maquina para maquina vive no `.env`, que a unit le por
+# EnvironmentFile.
+
+[Unit]
+Description=worker-gpu — arbitro de GPU (texto, imagem, conversao)
+# O Ollama precisa estar de pe antes: o worker repassa texto para ele. A
+# ordem nao e obrigatoria (o worker responde 503 se o Ollama nao estiver la),
+# mas evita um minuto de 503 a cada boot.
+After=network-online.target ollama.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+LINHA_DE_USUARIO
+WorkingDirectory=RAIZ
+EnvironmentFile=RAIZ/.env
+
+# `--host` e `--port` vem do .env. Numa maquina que atende outras, precisam
+# ser o endereco da rede privada e NUNCA 0.0.0.0: um endpoint que roda modelo
+# na sua placa, aberto na internet, e placa de graca para quem achar a porta.
+ExecStart=RAIZ/venv/bin/uvicorn app:app \
+    --host ${BIND_HOST} \
+    --port ${BIND_PORT} \
+    --workers 1
+
+# UM worker, e isto e o coracao do arranjo. Dois processos significam dois
+# arbitros, e dois arbitros sobre uma placa nao arbitram nada — cada um
+# acharia a GPU livre.
+Restart=always
+RestartSec=10
+
+# Curto de proposito. O laco de difusao nao olha para sinal, entao um
+# `systemctl restart` fica em `deactivating (stop-sigterm)` ate este prazo.
+# Quem limita a duracao de um trabalho e o `IMAGEM_TEMPO_MAXIMO`, que desiste
+# sozinho; aqui basta o tempo de terminar um passo e soltar a placa.
+TimeoutStopSec=90
+
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=ALVO_DE_INSTALACAO

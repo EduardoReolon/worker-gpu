@@ -1,0 +1,16 @@
+{
+  "_contrato_versao": "2.0",
+  "_rota": "POST /v1/chat/completions",
+  "_nota": "Repassado do Ollama, no dialeto da OpenAI. `stream` nao e aceito.",
+  "id": "chatcmpl-123",
+  "object": "chat.completion",
+  "model": "qwen2.5:7b-instruct",
+  "choices": [
+    {
+      "index": 0,
+      "message": {"role": "assistant", "content": "O texto gerado."},
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {"prompt_tokens": 120, "completion_tokens": 340, "total_tokens": 460}
+}

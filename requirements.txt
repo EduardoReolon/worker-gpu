@@ -1,0 +1,44 @@
+# Dependencias do worker de GPU.
+#
+# Instalar SOMENTE na maquina com placa. Quem consome este servico nao precisa
+# de nada disto — e esse e o ponto: o cliente fala HTTP.
+
+fastapi==0.121.2
+uvicorn[standard]==0.41.0
+python-multipart==0.0.20
+httpx==0.28.1
+
+# --- Conversao de PDF com analise de layout --------------------------------
+# Traz torch como dependencia (cerca de 2 GB), e e o motivo de este arquivo
+# nao poder ser fundido com o de nenhum cliente.
+docling==2.60.0
+
+# O `cv2`, que o Docling importa para analisar a estrutura de TABELA.
+#
+# Ele nao vem sozinho, e a razao e sutil. O `docling-ibm-models` declara o
+# opencv apenas como extra opcional; quem o trazia de fato era o `rapidocr`,
+# que o Docling pede assim:
+#
+#     rapidocr<4.0.0,>=3.3; python_version < "3.14"
+#
+# Em Python 3.14 esse marcador nao casa, o rapidocr nao entra, e o opencv some
+# junto. A falha aparece so na primeira conversao:
+#
+#     ModuleNotFoundError: No module named 'cv2'
+#
+# `headless` e nao a variante completa: aquela linka bibliotecas de interface
+# grafica (libGL) que uma maquina sem tela nao tem.
+opencv-python-headless>=4.6.0.66,<5
+
+# --- Geracao de imagem -----------------------------------------------------
+# `accelerate` nao e opcional aqui, ainda que o diffusers o declare assim: e
+# dele o `enable_model_cpu_offload()`, que mantem os pesos na RAM e sobe para
+# a placa so o submodulo em uso. Sem ele o pipeline inteiro vai para a VRAM e
+# uma placa de 8 GB nao comporta difusao ao lado de um modelo de texto.
+diffusers>=0.35,<0.42
+accelerate>=1.0,<2
+safetensors>=0.4,<1
+
+# `transformers` NAO e fixado de proposito: o docling e o diffusers pedem
+# faixas proprias, e uma versao cravada aqui passaria por cima das duas — o
+# sintoma seria um ImportError dentro de um dos dois, longe daqui.

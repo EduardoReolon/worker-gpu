@@ -1,0 +1,9 @@
+{
+  "_contrato_versao": "2.0",
+  "_rota": "POST /v1/images/generations",
+  "_nota": "Sempre b64_json. Um link temporario expiraria antes da publicacao.",
+  "created": 1758300000,
+  "data": [
+    {"b64_json": "iVBORw0KGgo=", "revised_prompt": "o prompt usado"}
+  ]
+}

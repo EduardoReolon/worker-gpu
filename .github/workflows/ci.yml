@@ -1,0 +1,38 @@
+# CI do worker-gpu.
+#
+# Ele NAO instala torch, docling nem diffusers — sao gigabytes, e nada do que
+# se testa aqui depende deles: os modelos sao substituidos nos testes. O que
+# se exercita e o contrato HTTP, a arbitragem e as recusas, que e onde os
+# erros deste repositorio doem.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  testes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Dependencias leves
+        # So o que o app precisa para importar e responder. A lista e curta de
+        # proposito: se ela crescer, e sinal de que algo pesado vazou para o
+        # caminho das rotas.
+        run: pip install fastapi==0.121.2 python-multipart==0.0.20 httpx==0.28.1 pytest==8.4.2 ruff==0.14.2
+
+      - name: Lint
+        run: |
+          ruff check .
+          ruff format --check .
+
+      - name: Testes
+        run: pytest -q
+
+      - name: O instalador nao tem erro de sintaxe
+        run: bash -n deploy/instalar.sh

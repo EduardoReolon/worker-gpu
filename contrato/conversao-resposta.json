@@ -1,0 +1,9 @@
+{
+  "_contrato_versao": "2.0",
+  "_rota": "POST /parse/",
+  "_nota": "multipart com o campo `file`. `X-Expected-Sha256` e opcional e confere o arquivo.",
+  "markdown": "# Titulo\n\nUm paragrafo.",
+  "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "bytes": 30,
+  "duration_ms": 1200
+}

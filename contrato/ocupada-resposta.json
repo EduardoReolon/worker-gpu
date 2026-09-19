@@ -1,0 +1,11 @@
+{
+  "_contrato_versao": "2.0",
+  "_rota": "qualquer, com HTTP 503 e cabecalho Retry-After",
+  "_nota": "error.code e o campo que o cliente le para decidir. Os codigos possiveis sao: gpu_ocupada, ollama_indisponivel, sem_vram, timeout. `modelo` so aparece quando se sabe qual esta em uso; ausente nao quer dizer nenhum.",
+  "error": {
+    "code": "gpu_ocupada",
+    "message": "a GPU esta em uso por 'texto'; tente em 18s",
+    "ocupante": "texto",
+    "modelo": "qwen2.5:7b-instruct"
+  }
+}

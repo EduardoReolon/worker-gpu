@@ -1,0 +1,36 @@
+# Projeto proprio: este diretorio e um repositorio, nao um subdiretorio do
+# PubliBot. A configuracao aqui e o que faz o `pytest` rodar sem arrastar as
+# settings do Django do projeto vizinho — enquanto os dois convivem na mesma
+# arvore, e depois da separacao, por si so.
+
+[project]
+name = "worker-gpu"
+version = "2.0.0"
+description = "Arbitro de GPU: texto, imagem e conversao de PDF numa placa so"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+# `rootdir` passa a ser esta pasta, e o conftest do vizinho nao e carregado.
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-p no:cacheprovider"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = ["venv", ".venv", "medicoes"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "C4", "S", "RUF"]
+ignore = [
+    "S101",   # assert: legitimo dentro de teste
+    "RUF001", # o codigo e comentado em portugues, sem acento por escolha
+    "RUF002",
+    "RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Os medidores e o baixador sao ferramentas de terminal: `print` e a saida.
+"medir.py" = ["T20"]
+"medir_imagem.py" = ["T20"]
+"baixar_modelo.py" = ["T20"]
