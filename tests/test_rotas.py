@@ -436,7 +436,7 @@ def test_o_num_ctx_do_cliente_chega_ao_ollama(worker, cabecalhos, monkeypatch):
             },
         )
 
-    monkeypatch.setattr(ollama._cliente, "post", post)
+    monkeypatch.setattr(ollama._obter_cliente(), "post", post)
 
     resposta = TestClient(worker.app).post(
         "/v1/chat/completions",
@@ -470,7 +470,7 @@ def test_sem_options_o_caminho_antigo_nao_muda(worker, cabecalhos, monkeypatch):
         visto["json"] = kwargs["json"]
         return httpx.Response(200, json={"choices": [], "usage": {}})
 
-    monkeypatch.setattr(ollama._cliente, "post", post)
+    monkeypatch.setattr(ollama._obter_cliente(), "post", post)
 
     TestClient(worker.app).post(
         "/v1/chat/completions",
@@ -496,7 +496,7 @@ def test_um_erro_do_nativo_sai_na_forma_da_openai(worker, cabecalhos, monkeypatc
     import ollama
 
     monkeypatch.setattr(
-        ollama._cliente,
+        ollama._obter_cliente(),
         "post",
         lambda url, **k: httpx.Response(404, json={"error": 'model "x" not found'}),
     )

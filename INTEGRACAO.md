@@ -41,9 +41,18 @@ curl -s -H "Authorization: Bearer $SEGREDO" -H 'Content-Type: application/json' 
   $WORKER/v1/chat/completions | jq -r '.choices[0].message.content'
 ```
 
+**Confira que o `$SEGREDO` não está vazio antes de testar.** Uma variável de
+shell vazia não dá erro: o `curl` manda `Authorization: Bearer ` e o worker
+responde `401` com toda a razão — e você vai procurar defeito no worker. Um
+`grep` num caminho de `.env` errado é a causa mais comum:
+
+```bash
+[[ -n "$SEGREDO" ]] && echo "segredo com ${#SEGREDO} caracteres" || echo "VAZIO"
+```
+
 | O que veio | O que significa |
 |---|---|
-| `401` | segredo errado, ou faltou o cabeçalho |
+| `401` | segredo errado, faltou o cabeçalho, ou a sua variável está vazia |
 | `404` na rota | aquela rota está desligada (`IMAGEM_ATIVA`/`CONVERSAO_ATIVA`) |
 | `503` | está funcionando — a placa só está ocupada agora |
 | nada, e o curl expira | o worker não está escutando nesse endereço |

@@ -343,7 +343,7 @@ def test_a_forma_publicada_e_a_mesma_pelos_dois_caminhos(worker, cabecalhos, mon
     def post(url, **kwargs):
         return httpx.Response(200, json=nativa if url == "/api/chat" else compativel)
 
-    monkeypatch.setattr(ollama._cliente, "post", post)
+    monkeypatch.setattr(ollama._obter_cliente(), "post", post)
     cliente_http = TestClient(worker.app)
     esperada = _forma(_exemplo("texto-resposta.json"))
 

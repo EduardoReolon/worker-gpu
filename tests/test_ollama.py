@@ -40,7 +40,7 @@ def test_o_readtimeout_vira_demorou_demais(ollama_mod, monkeypatch):
     """E o unico caso em que repetir IGUAL nao adianta: o trabalho nao cabe no
     orcamento. O cliente precisa reduzir o pedido, nao reagenda-lo."""
     monkeypatch.setattr(
-        ollama_mod._cliente, "post", _falhar_com(httpx.ReadTimeout("nada veio em 540s"))
+        ollama_mod._obter_cliente(), "post", _falhar_com(httpx.ReadTimeout("nada veio em 540s"))
     )
 
     with pytest.raises(ollama_mod.OllamaDemorouDemais):
@@ -66,7 +66,7 @@ def test_os_outros_timeouts_continuam_indisponivel(ollama_mod, monkeypatch, erro
     cliente httpx virou um so para o processo. Antes, cada chamada tinha pool
     proprio e ele nao podia acontecer.
     """
-    monkeypatch.setattr(ollama_mod._cliente, "post", _falhar_com(erro))
+    monkeypatch.setattr(ollama_mod._obter_cliente(), "post", _falhar_com(erro))
 
     with pytest.raises(ollama_mod.OllamaIndisponivel):
         ollama_mod.conversar({"messages": []}, {})
@@ -87,7 +87,9 @@ def test_erro_de_programacao_vira_503_mas_deixa_traceback(ollama_mod, monkeypatc
     vestido de "o Ollama nao responde", e o cliente reagenda por horas
     enquanto o operador procura no lugar errado.
     """
-    monkeypatch.setattr(ollama_mod._cliente, "post", _falhar_com(AttributeError("bug daqui")))
+    monkeypatch.setattr(
+        ollama_mod._obter_cliente(), "post", _falhar_com(AttributeError("bug daqui"))
+    )
 
     with caplog.at_level(logging.ERROR, logger="worker-gpu.ollama"):
         with pytest.raises(ollama_mod.OllamaIndisponivel):
@@ -102,7 +104,7 @@ def test_o_ollama_fora_do_ar_nao_polui_o_journal(ollama_mod, monkeypatch, caplog
     """O contrario do teste acima: o Ollama desligado e rotina, nao defeito.
     Um traceback por pedido recusado enterraria os erros de verdade."""
     monkeypatch.setattr(
-        ollama_mod._cliente, "post", _falhar_com(httpx.ConnectError("connection refused"))
+        ollama_mod._obter_cliente(), "post", _falhar_com(httpx.ConnectError("connection refused"))
     )
 
     with caplog.at_level(logging.ERROR, logger="worker-gpu.ollama"):
@@ -123,7 +125,7 @@ def test_o_corpo_vai_intacto_menos_o_stream(ollama_mod, monkeypatch):
         visto["json"] = kwargs["json"]
         return httpx.Response(200, json={"ok": True})
 
-    monkeypatch.setattr(ollama_mod._cliente, "post", post)
+    monkeypatch.setattr(ollama_mod._obter_cliente(), "post", post)
 
     ollama_mod.conversar(
         {"model": "m", "messages": [{"role": "user", "content": "oi"}], "max_tokens": 8}, {}
@@ -141,7 +143,7 @@ def test_nenhum_keep_alive_e_injetado(ollama_mod, monkeypatch):
     nenhum. Configuracao que mente e pior que configuracao ausente."""
     visto = {}
     monkeypatch.setattr(
-        ollama_mod._cliente,
+        ollama_mod._obter_cliente(),
         "post",
         lambda url, **k: visto.update(k["json"]) or httpx.Response(200, json={}),
     )
@@ -153,7 +155,9 @@ def test_nenhum_keep_alive_e_injetado(ollama_mod, monkeypatch):
 
 def test_uma_resposta_que_nao_e_json_nao_levanta(ollama_mod, monkeypatch):
     monkeypatch.setattr(
-        ollama_mod._cliente, "post", lambda url, **k: httpx.Response(502, text="<html>proxy</html>")
+        ollama_mod._obter_cliente(),
+        "post",
+        lambda url, **k: httpx.Response(502, text="<html>proxy</html>"),
     )
 
     status, dados = ollama_mod.conversar({"messages": []}, {})
@@ -191,7 +195,7 @@ def test_descarregar_tudo_sobrevive_ao_detalhe(ollama_mod, monkeypatch):
     )
     pedidos = []
     monkeypatch.setattr(
-        ollama_mod._cliente,
+        ollama_mod._obter_cliente(),
         "post",
         lambda url, **k: pedidos.append(k["json"]) or httpx.Response(200, json={}),
     )
@@ -204,7 +208,9 @@ def test_um_api_ps_que_nao_e_json_devolve_lista_vazia(ollama_mod, monkeypatch):
     """`resposta.json()` levanta `ValueError`, que NAO e `httpx.HTTPError` —
     era por aqui que o `/health/` devolvia 500."""
     monkeypatch.setattr(
-        ollama_mod._cliente, "get", lambda url, **k: httpx.Response(200, text="nao sou json")
+        ollama_mod._obter_cliente(),
+        "get",
+        lambda url, **k: httpx.Response(200, text="nao sou json"),
     )
 
     assert ollama_mod.modelos_carregados_detalhe() == []
@@ -291,3 +297,74 @@ def _conexoes_no_pool(cliente: httpx.Client):
         return len(cliente._transport._pool.connections)
     except AttributeError:
         return None
+
+
+# ---------------------------------------------------------------------------
+# A construcao do cliente pode falhar, e nao pode derrubar o processo
+# ---------------------------------------------------------------------------
+@pytest.fixture
+def cliente_que_nao_constroi(ollama_mod, monkeypatch):
+    """Reproduz uma falha REAL de producao.
+
+    `httpx.Client()` monta um contexto SSL na construcao, e numa maquina o
+    `create_ssl_context` levantou `FileNotFoundError` procurando o pacote de
+    certificados. Nem `FileNotFoundError` nem os parentes dele estao em
+    `httpx.HTTPError`, e o `/health/` passou a responder 500.
+    """
+    monkeypatch.setattr(ollama_mod, "_cliente", None)
+
+    def nao_constroi(*a, **k):
+        raise FileNotFoundError(2, "No such file or directory")
+
+    monkeypatch.setattr(ollama_mod.httpx, "Client", nao_constroi)
+
+
+def test_sem_cliente_as_leituras_degradam_em_vez_de_levantar(ollama_mod, cliente_que_nao_constroi):
+    assert ollama_mod.esta_de_pe() is False
+    assert ollama_mod.modelos_carregados_detalhe() == []
+    assert ollama_mod.modelos_carregados() == []
+    assert ollama_mod.modelos_no_disco() == []
+    assert ollama_mod.descarregar_tudo() == []
+
+
+def test_sem_cliente_a_rota_de_texto_devolve_503(ollama_mod, cliente_que_nao_constroi):
+    """E nao 500, e nao um processo morto: e transitorio do ponto de vista do
+    cliente, e o codigo diz qual parte esta doente."""
+    with pytest.raises(ollama_mod.OllamaIndisponivel):
+        ollama_mod.conversar({"messages": []}, {})
+
+
+def test_sem_cliente_o_health_continua_respondendo(worker, cliente_que_nao_constroi):
+    """A razao de o cliente ser construido PREGUICOSAMENTE e nao na importacao.
+
+    Na importacao, esta mesma falha viraria "o servico nao sobe" — e levaria
+    junto a imagem e a conversao, que nao precisam do Ollama para nada.
+    """
+    from fastapi.testclient import TestClient
+
+    resposta = TestClient(worker.app).get("/health/")
+
+    assert resposta.status_code == 200
+    assert resposta.json()["ollama"]["de_pe"] is False
+    assert resposta.json()["rotas"]["imagem"] is True
+
+
+def test_o_cliente_e_construido_uma_vez_so(ollama_mod, monkeypatch):
+    """Construir por chamada era o desperdicio que motivou o cliente unico:
+    cada construcao monta um contexto SSL para falar HTTP com o loopback."""
+    monkeypatch.setattr(ollama_mod, "_cliente", None)
+    construcoes = []
+
+    real = ollama_mod.httpx.Client
+
+    def contando(*a, **k):
+        construcoes.append(1)
+        return real(*a, **k)
+
+    monkeypatch.setattr(ollama_mod.httpx, "Client", contando)
+
+    primeiro = ollama_mod._obter_cliente()
+    segundo = ollama_mod._obter_cliente()
+
+    assert primeiro is segundo
+    assert len(construcoes) == 1

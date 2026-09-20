@@ -42,6 +42,7 @@ pelo cliente, por vir no pedido, e honrado.
 from __future__ import annotations
 
 import logging
+import threading
 
 import httpx
 
@@ -66,22 +67,40 @@ class OllamaDemorouDemais(RuntimeError):
     """
 
 
-# Um cliente para o processo, e nao um por chamada. Cada `httpx.Client()` monta
-# um contexto SSL do zero, o que e trabalho inutil para falar HTTP com o
-# loopback — e era feito em TODA ida ao Ollama, inclusive nas duas que o
-# `/health/` faz.
-#
-# O timeout padrao e o CURTO, de proposito. Quem precisa de mais passa
-# `timeout=` na chamada; quem esquecer herda 5s e falha rapido. O inverso —
-# padrao longo, curto por chamada — faria a primeira funcao nova escrita sem o
-# parametro pendurar o `/health/` por dez minutos, que e exatamente quando ele
-# mais importa.
-#
-# Construido na importacao: se falhar, o servico nao sobe, e o journal diz por
-# que. E melhor que subir e devolver 500 em cada pedido, pelo mesmo motivo que
-# `conversao.conferir_ocr()` recusa a subida em vez de falhar na primeira
-# conversao.
-_cliente = httpx.Client(base_url=OLLAMA_URL, timeout=5.0)
+_trava_do_cliente = threading.Lock()
+_cliente: httpx.Client | None = None
+
+
+def _obter_cliente() -> httpx.Client:
+    """O cliente HTTP do processo, construido uma vez, na primeira ida.
+
+    Um por processo, e nao um por chamada: cada `httpx.Client()` monta um
+    contexto SSL do zero, trabalho inutil para falar HTTP com o loopback — e
+    era feito em TODA ida ao Ollama, inclusive nas duas que o `/health/` faz.
+
+    **Preguicoso, e nao na importacao**, porque essa construcao JA FALHOU numa
+    maquina de producao: `create_ssl_context` levantou `FileNotFoundError`
+    procurando o pacote de certificados, e o `/health/` passou a responder 500.
+
+    Construido na importacao, a MESMA falha viraria "o servico nao sobe" — e
+    derrubaria junto a imagem e a conversao, que nao precisam do Ollama para
+    nada. Preguicoso, ela vira 503 na rota de texto e `de_pe: false` no
+    `/health/`: o diagnostico certo, pela parte certa, com o resto de pe.
+
+    O timeout padrao e o CURTO, de proposito. Quem precisa de mais passa
+    `timeout=` na chamada; quem esquecer herda 5s e falha rapido. O inverso —
+    padrao longo, curto por chamada — faria a primeira funcao nova escrita sem
+    o parametro pendurar o `/health/` por dez minutos, que e exatamente quando
+    ele mais importa.
+    """
+    global _cliente
+
+    if _cliente is None:
+        with _trava_do_cliente:
+            if _cliente is None:
+                _cliente = httpx.Client(base_url=OLLAMA_URL, timeout=5.0)
+
+    return _cliente
 
 
 def modelos_carregados_detalhe() -> list[dict]:
@@ -97,7 +116,7 @@ def modelos_carregados_detalhe() -> list[dict]:
     cliente tem como desconfiar.
     """
     try:
-        resposta = _cliente.get("/api/ps", timeout=10.0)
+        resposta = _obter_cliente().get("/api/ps", timeout=10.0)
         resposta.raise_for_status()
         modelos = resposta.json().get("models") or []
     except Exception as erro:
@@ -148,7 +167,9 @@ def descarregar_tudo() -> list[str]:
             # Sem `prompt` e com `keep_alive: 0`: o Ollama entende como
             # "carregue nada e esqueca este modelo". Aqui e o dialeto NATIVO,
             # onde `keep_alive` existe de verdade.
-            _cliente.post("/api/generate", json={"model": modelo, "keep_alive": 0}, timeout=30.0)
+            _obter_cliente().post(
+                "/api/generate", json={"model": modelo, "keep_alive": 0}, timeout=30.0
+            )
         except Exception as erro:
             logger.warning("Falha ao descarregar %s: %s", modelo, erro)
 
@@ -182,7 +203,7 @@ def conversar(corpo: dict, cabecalhos: dict[str, str]) -> tuple[int, dict]:
         rota, envio = "/v1/chat/completions", corpo
 
     try:
-        resposta = _cliente.post(
+        resposta = _obter_cliente().post(
             rota,
             json=envio,
             headers={"Content-Type": "application/json"},
@@ -231,7 +252,7 @@ def conversar(corpo: dict, cabecalhos: dict[str, str]) -> tuple[int, dict]:
 def modelos_no_disco() -> list[str]:
     """O que o `/v1/models` do worker responde: o catalogo do Ollama."""
     try:
-        resposta = _cliente.get("/api/tags", timeout=10.0)
+        resposta = _obter_cliente().get("/api/tags", timeout=10.0)
         resposta.raise_for_status()
         modelos = resposta.json().get("models") or []
     except Exception as erro:
@@ -243,6 +264,6 @@ def modelos_no_disco() -> list[str]:
 
 def esta_de_pe() -> bool:
     try:
-        return _cliente.get("/api/version").is_success
+        return _obter_cliente().get("/api/version").is_success
     except Exception:
         return False
