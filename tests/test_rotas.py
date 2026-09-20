@@ -408,3 +408,108 @@ def test_o_health_nao_paga_duas_viagens_ao_api_ps(worker, monkeypatch):
     assert len(idas) == 1
     assert corpo["ollama"]["carregados"] == ["qwen2.5:7b-instruct"]
     assert corpo["ollama"]["carregados_detalhe"][0]["context_length"] == 4096
+
+
+# ---------------------------------------------------------------------------
+# Janela de contexto: qual dialeto o pedido toma
+# ---------------------------------------------------------------------------
+def test_o_num_ctx_do_cliente_chega_ao_ollama(worker, cabecalhos, monkeypatch):
+    """O defeito que a traducao existe para consertar: pela camada compativel
+    isto respondia 200 tendo rodado com a janela padrao, e o truncamento come o
+    prompt de sistema pelo comeco."""
+    import httpx
+
+    import ollama
+
+    visto = {}
+
+    def post(url, **kwargs):
+        visto["url"] = url
+        visto["json"] = kwargs["json"]
+        return httpx.Response(
+            200,
+            json={
+                "model": "m",
+                "message": {"role": "assistant", "content": "ok"},
+                "prompt_eval_count": 9000,
+                "eval_count": 5,
+            },
+        )
+
+    monkeypatch.setattr(ollama._cliente, "post", post)
+
+    resposta = TestClient(worker.app).post(
+        "/v1/chat/completions",
+        json={
+            "model": "m",
+            "messages": [{"role": "user", "content": "oi"}],
+            "options": {"num_ctx": 16384},
+            "max_tokens": 512,
+        },
+        headers=cabecalhos,
+    )
+
+    assert visto["url"] == "/api/chat"
+    assert visto["json"]["options"]["num_ctx"] == 16384
+    assert visto["json"]["options"]["num_predict"] == 512
+    # E o `prompt_tokens` volta, que e como o cliente detecta truncamento.
+    assert resposta.json()["usage"]["prompt_tokens"] == 9000
+
+
+def test_sem_options_o_caminho_antigo_nao_muda(worker, cabecalhos, monkeypatch):
+    """Ha dois clientes em producao e um deles nao manda `options`. Ele nao
+    deve pagar pelo risco de uma traducao que nao pediu."""
+    import httpx
+
+    import ollama
+
+    visto = {}
+
+    def post(url, **kwargs):
+        visto["url"] = url
+        visto["json"] = kwargs["json"]
+        return httpx.Response(200, json={"choices": [], "usage": {}})
+
+    monkeypatch.setattr(ollama._cliente, "post", post)
+
+    TestClient(worker.app).post(
+        "/v1/chat/completions",
+        json={"model": "m", "messages": [{"role": "user", "content": "oi"}], "temperature": 0.2},
+        headers=cabecalhos,
+    )
+
+    assert visto["url"] == "/v1/chat/completions"
+    assert visto["json"] == {
+        "model": "m",
+        "messages": [{"role": "user", "content": "oi"}],
+        "temperature": 0.2,
+        "stream": False,
+    }
+
+
+def test_um_erro_do_nativo_sai_na_forma_da_openai(worker, cabecalhos, monkeypatch):
+    """O nativo devolve `{"error": "texto"}`. Sem normalizar, o mesmo modelo
+    inexistente chegaria ao cliente em duas formas conforme ele ter mandado
+    `options` ou nao."""
+    import httpx
+
+    import ollama
+
+    monkeypatch.setattr(
+        ollama._cliente,
+        "post",
+        lambda url, **k: httpx.Response(404, json={"error": 'model "x" not found'}),
+    )
+
+    resposta = TestClient(worker.app).post(
+        "/v1/chat/completions",
+        json={
+            "model": "x",
+            "messages": [{"role": "user", "content": "oi"}],
+            "options": {"num_ctx": 8192},
+        },
+        headers=cabecalhos,
+    )
+
+    assert resposta.status_code == 404
+    assert resposta.json()["error"]["message"] == 'model "x" not found'

@@ -181,48 +181,75 @@ Dois limites honestos: o modelo precisa existir no Ollama da máquina
 modelo diferente expulsa o que estava carregado. Não é falha, é tempo: o
 próximo pedido espera o carregamento.
 
-### A janela de contexto NÃO é por pedido
+### A janela de contexto, por pedido
 
-Esta é a limitação que mais engana, porque ela responde **200**.
+**Funciona: mande `options.num_ctx` no corpo.**
 
-O worker repassa o seu corpo ao `/v1/chat/completions` do Ollama, que é a
-camada compatível com a OpenAI. Ela desserializa o corpo num struct tipado, e
-**chave que ela não conhece some na desserialização** — sem erro, sem log, sem
-nada no corpo da resposta. `options` inteiro cai nessa, e com ele `num_ctx` e
-`num_predict`. Mandar `{"options": {"num_ctx": 16384}}` devolve 200 e não muda
-janela nenhuma.
+```json
+{"model": "qwen2.5:7b-instruct",
+ "messages": [{"role": "system", "content": "..."},
+              {"role": "user", "content": "..."}],
+ "options": {"num_ctx": 16384},
+ "max_tokens": 800}
+```
 
-O que funciona é o que é campo do dialeto da OpenAI:
+Não é o dialeto da OpenAI — é o do Ollama, e é de propósito. O worker olha o
+seu pedido: se ele traz `options` (ou `keep_alive`), o pedido vai pelo
+`/api/chat` do Ollama, onde esses campos existem; se não traz, segue pelo
+`/v1/chat/completions`, exatamente como antes. A **resposta é a mesma nos dois
+casos** — você não precisa saber qual caminho o seu pedido tomou, e um teste do
+worker garante que as duas formas não divergem.
 
-| Você manda | Chega como | Funciona |
+Por que isso não era assim antes: a camada compatível do Ollama desserializa o
+corpo num struct tipado e **descarta chave que não conhece, sem erro e sem
+log**. `options` inteiro caía nessa. Um pedido com `num_ctx: 16384` respondia
+200 tendo rodado com 4096.
+
+| Você manda | Vale | Observação |
 |---|---|---|
-| `max_tokens` | `num_predict` | **sim** |
-| `temperature`, `top_p`, `seed`, `stop` | idem | **sim** |
-| `response_format` (inclusive `json_schema`) | `format` | **sim** |
-| `options.num_ctx` | — | **não**, descartado |
-| `options.num_predict` | — | **não**, descartado (use `max_tokens`) |
-| `keep_alive` | — | **não**, descartado |
+| `options.num_ctx` | **sim** | leva o pedido pelo dialeto nativo |
+| `options.num_predict` | **sim** | ou use `max_tokens`, que é equivalente |
+| `options.*` (qualquer opção do Ollama) | **sim** | repassado como está |
+| `keep_alive` | **sim** | leva o pedido pelo dialeto nativo |
+| `max_tokens`, `temperature`, `top_p`, `seed`, `stop` | **sim** | nos dois caminhos |
+| `response_format` (inclusive `json_schema`) | **sim** | nos dois caminhos |
+| `n` maior que 1 | **não** | o Ollama gera uma resposta por pedido; vira aviso no journal do worker |
 
-**Se você precisa de janela própria, embuta no modelo.** Um Modelfile por
-modelo (ou por janela) resolve sem nada especial daqui, e encaixa em quem já
-guarda o modelo por cliente:
+**Se você mandar `options` e um campo equivalente da OpenAI, o `options`
+ganha** — ele é a intenção mais específica. `max_tokens: 100` junto de
+`options: {"num_predict": 500}` roda com 500.
 
-```
-FROM qwen2.5:7b-instruct
-PARAMETER num_ctx 16384
-```
+**Campo que o worker não sabe traduzir vira AVISO no journal dele**, nunca
+silêncio. Se você suspeitar que algo não está chegando, peça ao dono da máquina:
 
 ```bash
-ollama create crm-janela-16k -f Modelfile
+journalctl --user -u worker-gpu -f | grep dialeto
 ```
 
-E o `model` que você manda passa a ser `crm-janela-16k`. Os pesos são
-compartilhados no disco (o `FROM` não duplica gigabytes), mas com
-`OLLAMA_MAX_LOADED_MODELS=1` cada derivado é um modelo carregado distinto —
-então derive por *janela*, não por cliente, se muitos compartilham a mesma.
+#### Não precisa mais de Modelfile
 
-A alternativa global é `OLLAMA_CONTEXT_LENGTH` no serviço do Ollama, que vale
-para a máquina inteira e para todos os clientes dela.
+A recomendação anterior era embutir a janela no modelo com
+`PARAMETER num_ctx` e um `ollama create`. Ela **continua funcionando**, mas
+deixou de ser necessária, e a razão de ter saído de cena é prática: alguém
+precisava rodar o `ollama create` a cada máquina nova, e **esquecer não dava
+erro nenhum** — voltava a janela padrão, em silêncio. Se você já criou modelos
+derivados, eles seguem valendo; se não criou, não crie.
+
+#### Um custo real que aparece agora
+
+Com o `num_ctx` passando a valer de verdade, ele passa a **custar VRAM**. A
+cache de atenção de 16k tokens num modelo de 7B não é de graça, e numa placa de
+8 GB pode ser a diferença entre caber e o Ollama espalhar camadas para a CPU —
+o que não dá erro, só fica muitas vezes mais lento.
+
+Se o tempo de resposta piorar depois de você subir a janela, é isso. Confira:
+
+```bash
+curl -s http://<worker>:8090/health/ \
+  | jq '.ollama.carregados_detalhe[] | {name, context_length, size_vram}'
+```
+
+Peça a janela que você precisa, não a maior que couber.
 
 ### Como detectar truncamento
 
@@ -236,6 +263,7 @@ Três sinais, do mais barato para o mais caro:
 | Sinal | Custo | O que prova |
 |---|---|---|
 | `usage.prompt_tokens` vs. o que você mandou | nada | truncou, se vier muito abaixo — e travado num número redondo (2048, 4096) é conclusivo |
+| `finish_reason == "length"` | nada | a **saída** foi cortada pelo `max_tokens`, não a entrada |
 | `ollama.carregados_detalhe[].context_length` no `/health/` | uma viagem | com que janela o modelo **está** carregado |
 | um canário no início do prompt de sistema, ecoado na saída | um campo no schema | se o início do prompt sobreviveu, **neste pedido** |
 
@@ -536,9 +564,15 @@ pontos merecem olhada:
   cabeçalho — a única forma de 503 que saía daqui sem nada para decidir;
 - **`/health/` ganhou `ollama.carregados_detalhe`** e passou a nunca responder
   500. `ollama.carregados` continua sendo a lista de nomes, intocada;
-- **`OLLAMA_KEEP_ALIVE` foi removido do worker.** Ele era injetado no corpo e
-  descartado pela camada compatível do Ollama: parecia ativo e não tinha efeito
-  nenhum. A política de memória da máquina se ajusta no Ollama.
+- **`options` passou a funcionar.** `options.num_ctx` e `options.num_predict`
+  eram descartados em silêncio pela camada compatível do Ollama; agora um
+  pedido que traz `options` (ou `keep_alive`) é roteado pelo dialeto nativo e
+  traduzido de volta. A forma da resposta não muda, e quem não manda `options`
+  segue pelo caminho antigo sem diferença nenhuma;
+- **`OLLAMA_KEEP_ALIVE` (a variável do worker) foi removido.** Ele era injetado
+  no corpo e descartado pela camada compatível: parecia ativo e não tinha
+  efeito nenhum. Um `keep_alive` que **você** mandar no pedido é honrado, porque
+  ele leva o pedido pelo nativo; a política da máquina se ajusta no Ollama.
 
 ## Checklist
 
@@ -553,7 +587,7 @@ pontos merecem olhada:
 - [ ] `ConnectionError` (restart do worker) entra no mesmo teto
 - [ ] Sem `stream: true`
 - [ ] Timeout do cliente **maior** que `OLLAMA_TIMEOUT`, não igual
-- [ ] Janela de contexto embutida no modelo — `options.num_ctx` não funciona
+- [ ] Janela de contexto por pedido em `options.num_ctx` (não precisa de Modelfile)
 - [ ] Truncamento monitorado por `usage.prompt_tokens`
 - [ ] Exemplos de `contrato/` copiados para os seus testes
 - [ ] Reagendar, nunca `sleep`

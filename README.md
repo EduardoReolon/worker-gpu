@@ -103,11 +103,15 @@ Ele deixa de ser crítico de qualquer forma: o worker descarrega o modelo quando
 precisa da placa para imagem. Mantê-lo alto passa a ser vantagem — o texto não
 recarrega à toa.
 
-Pelo mesmo motivo, **`OLLAMA_CONTEXT_LENGTH` é o lugar de ajustar a janela de
-contexto global**: um `options.num_ctx` mandado pelo cliente é descartado antes
-de chegar ao modelo. Janela por modelo se embute num Modelfile
-(`PARAMETER num_ctx`). O `INTEGRACAO.md` explica o que isso significa para quem
-integra, e como detectar truncamento.
+**`OLLAMA_CONTEXT_LENGTH` é o padrão da máquina**, e vale para quem não pedir
+nada. Um cliente que manda `options.num_ctx` no pedido tem a janela dele
+respeitada: o worker roteia esse pedido pelo `/api/chat` do Ollama, porque a
+camada compatível descartaria o `options` sem avisar. Veja `dialeto.py`.
+
+Isso significa que a janela passou a **custar VRAM de verdade**. Uma cache de
+atenção de 16k num modelo de 7B pode ser a diferença entre caber na placa e o
+Ollama espalhar camadas para a CPU — que não dá erro, só fica lento. O
+`/health/` mostra `context_length` e `size_vram` por modelo carregado.
 
 ### O Docling (conversão de PDF)
 

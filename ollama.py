@@ -15,24 +15,28 @@ texto, entao mandar o Ollama soltar o modelo e seguro.
 O jeito de soltar e o proprio protocolo: um pedido com `keep_alive: 0` e sem
 prompt descarrega o modelo. Nao ha comando especial nem processo a matar.
 
-## O que NAO atravessa este proxy
+## Dois caminhos, e como se escolhe
 
-O corpo vai intacto, mas "intacto" nao e "inteiro": `/v1/chat/completions` do
-Ollama e a camada compativel com a OpenAI, e ela desserializa o corpo num
-struct tipado. **Chave que ela nao conhece some na desserializacao, sem erro e
-sem log** — `options` inteiro, e com ele `num_ctx` e `num_predict`.
+O Ollama fala dois dialetos, e o worker usa os dois:
 
-O que funciona e o que e campo do dialeto da OpenAI: `max_tokens` (que ela
-mesma traduz para `num_predict`), `temperature`, `top_p`, `seed`, `stop`,
-`response_format`. Quem precisa de janela de contexto propria embute a janela
-no modelo (`PARAMETER num_ctx` num Modelfile) ou ajusta o
-`OLLAMA_CONTEXT_LENGTH` da maquina.
+    sem `options`     ->  /v1/chat/completions   (compativel, repasse cru)
+    com `options`     ->  /api/chat              (nativo, traduzido)
 
-Havia aqui uma injecao de `keep_alive` no corpo, vinda de um `OLLAMA_KEEP_ALIVE`
-no `.env`. Ela foi REMOVIDA: `keep_alive` tambem nao e campo do dialeto da
-OpenAI, entao a variavel parecia ativa e nao tinha efeito nenhum — o pior tipo
-de configuracao, a que mente. Enquanto o proxy falar o dialeto da OpenAI, a
-politica de memoria desta maquina se ajusta no Ollama, e nao aqui.
+A camada compativel desserializa o corpo num struct tipado e **descarta chave
+que nao conhece, sem erro e sem log** — `options` inteiro cai nessa, e com ele
+`num_ctx`. Um pedido com janela de 16k voltava 200 rodando com 4k, e o
+truncamento come o prompt PELO COMECO: morre o prompt de sistema primeiro.
+
+Por isso um pedido que traz `options` (ou `keep_alive`) vai pelo nativo, onde
+esses campos existem de verdade, e `dialeto.py` traduz ida e volta. Quem nao
+traz nenhum dos dois segue pelo caminho antigo, byte por byte — ha dois
+clientes em producao e um deles nao precisa disto, e nao deve pagar pelo risco
+de uma traducao.
+
+`OLLAMA_KEEP_ALIVE` continua FORA do `.env` daqui, e a ausencia e deliberada:
+uma variavel que vale num caminho e nao no outro e pior que variavel nenhuma. A
+politica de memoria da maquina se ajusta no Ollama; um `keep_alive` mandado
+pelo cliente, por vir no pedido, e honrado.
 """
 
 from __future__ import annotations
@@ -41,6 +45,7 @@ import logging
 
 import httpx
 
+import dialeto
 from config import OLLAMA_TIMEOUT, OLLAMA_URL
 
 logger = logging.getLogger("worker-gpu.ollama")
@@ -153,9 +158,10 @@ def descarregar_tudo() -> list[str]:
 def conversar(corpo: dict, cabecalhos: dict[str, str]) -> tuple[int, dict]:
     """Repassa um `/v1/chat/completions` ao Ollama e devolve (status, json).
 
-    O corpo vai intacto: o que o cliente pediu e o que o modelo recebe. A unica
-    intromissao e o `stream`. Veja a docstring do modulo para o que a camada
-    compativel do Ollama descarta por conta propria.
+    Pelo caminho compativel o corpo vai intacto e a unica intromissao e o
+    `stream`. Pelo nativo ele e traduzido por `dialeto.py`, ida e volta, e a
+    resposta sai na mesma forma nos dois casos — quem integra nao tem como
+    saber qual caminho o pedido tomou, e nao deve precisar saber.
     """
     corpo = dict(corpo)
 
@@ -165,10 +171,20 @@ def conversar(corpo: dict, cabecalhos: dict[str, str]) -> tuple[int, dict]:
     # metade.
     corpo["stream"] = False
 
+    pelo_nativo = dialeto.precisa_do_nativo(corpo)
+    if pelo_nativo:
+        rota, envio = "/api/chat", dialeto.para_nativo(corpo)
+        logger.info(
+            "Pelo dialeto nativo (options=%s): a camada compativel descartaria isso.",
+            envio.get("options"),
+        )
+    else:
+        rota, envio = "/v1/chat/completions", corpo
+
     try:
         resposta = _cliente.post(
-            "/v1/chat/completions",
-            json=corpo,
+            rota,
+            json=envio,
             headers={"Content-Type": "application/json"},
             timeout=OLLAMA_TIMEOUT,
         )
@@ -198,9 +214,18 @@ def conversar(corpo: dict, cabecalhos: dict[str, str]) -> tuple[int, dict]:
         raise OllamaIndisponivel(f"nao foi possivel falar com {OLLAMA_URL}: {erro}") from erro
 
     try:
-        return resposta.status_code, resposta.json()
+        dados = resposta.json()
     except ValueError:
         return resposta.status_code, {"error": {"message": resposta.text[:500]}}
+
+    if not pelo_nativo:
+        return resposta.status_code, dados
+    if resposta.is_success:
+        return resposta.status_code, dialeto.para_openai(dados, corpo.get("model"))
+
+    # Erro do nativo normalizado para a forma da OpenAI: o mesmo erro nao pode
+    # chegar ao cliente em duas formas conforme o caminho que ele nem escolheu.
+    return resposta.status_code, dialeto.erro_para_openai(dados)
 
 
 def modelos_no_disco() -> list[str]:

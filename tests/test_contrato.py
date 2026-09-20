@@ -308,3 +308,59 @@ def test_o_timeout_e_o_unico_503_sem_retry_after(worker, cabecalhos, monkeypatch
     caiu = cliente_http.post("/v1/chat/completions", json=corpo, headers=cabecalhos)
     assert caiu.json()["error"]["code"] == "ollama_indisponivel"
     assert "Retry-After" in caiu.headers
+
+
+def test_a_forma_publicada_e_a_mesma_pelos_dois_caminhos(worker, cabecalhos, monkeypatch):
+    """A garantia central da traducao: quem integra copiou UM exemplo e nao
+    tem como saber por qual dialeto o pedido dele foi.
+
+    Um pedido com `options` vai pelo `/api/chat`, cuja resposta tem outra forma
+    (`message` na raiz, `prompt_eval_count` em vez de `usage`). Se a traducao
+    de volta divergir em um campo, o cliente quebra sem nada no worker acusar —
+    e quebra so nos pedidos que pedem janela de contexto.
+    """
+    import httpx
+
+    import ollama
+
+    nativa = {
+        "model": "qwen2.5:7b-instruct",
+        "message": {"role": "assistant", "content": "O texto gerado."},
+        "done_reason": "stop",
+        "prompt_eval_count": 120,
+        "eval_count": 340,
+    }
+    compativel = {
+        "id": "chatcmpl-1",
+        "object": "chat.completion",
+        "model": "qwen2.5:7b-instruct",
+        "choices": [
+            {"index": 0, "message": {"role": "assistant", "content": "x"}, "finish_reason": "stop"}
+        ],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+    }
+
+    def post(url, **kwargs):
+        return httpx.Response(200, json=nativa if url == "/api/chat" else compativel)
+
+    monkeypatch.setattr(ollama._cliente, "post", post)
+    cliente_http = TestClient(worker.app)
+    esperada = _forma(_exemplo("texto-resposta.json"))
+
+    pelo_antigo = cliente_http.post(
+        "/v1/chat/completions",
+        json={"model": "qwen2.5:7b-instruct", "messages": [{"role": "user", "content": "oi"}]},
+        headers=cabecalhos,
+    )
+    pelo_nativo = cliente_http.post(
+        "/v1/chat/completions",
+        json={
+            "model": "qwen2.5:7b-instruct",
+            "messages": [{"role": "user", "content": "oi"}],
+            "options": {"num_ctx": 16384},
+        },
+        headers=cabecalhos,
+    )
+
+    assert esperada <= _forma(pelo_antigo.json())
+    assert esperada <= _forma(pelo_nativo.json())
