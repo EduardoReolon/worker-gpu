@@ -35,6 +35,10 @@ def ambiente(monkeypatch):
     # O Ollama nao existe nos testes; quem precisa dele substitui.
     monkeypatch.setenv("OLLAMA_DESCARREGAR_PARA_IMAGEM", "nao")
     monkeypatch.setenv("ESPERA_PELO_LOCK", "0")
+    # Desligado por padrao: nenhum teste quer baixar gigabytes, e um pedido de
+    # modelo ausente viraria 503 `baixando_modelo` em vez do que o teste mede.
+    # Quem exercita o download liga de volta.
+    monkeypatch.setenv("BAIXAR_MODELO_AUTOMATICO", "nao")
 
 
 def _recarregar(*nomes: str):
@@ -48,7 +52,10 @@ def _recarregar(*nomes: str):
 @pytest.fixture
 def worker(ambiente):
     """O app inteiro, recarregado com o ambiente do teste."""
-    modulos = _recarregar("ollama", "texto", "imagem", "conversao", "app")
+    # `modelos` depois de `ollama` e antes de `texto`: ele le `ollama` e e lido
+    # por `texto`. Recarregar fora de ordem deixaria `texto` apontando para um
+    # `modelos` velho, com o cache de modelos no disco de outro teste dentro.
+    modulos = _recarregar("ollama", "modelos", "texto", "imagem", "conversao", "app")
     return modulos["app"]
 
 

@@ -63,6 +63,35 @@ OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
 # ele desiste devolvendo um 503 legivel em vez de um socket cortado.
 OLLAMA_TIMEOUT = _decimal("OLLAMA_TIMEOUT", 540.0)
 
+# Baixar sozinho um modelo pedido que nao esta no disco.
+#
+# Ligado: com um modelo por inquilino, lembrar de dar `ollama pull` em cada um
+# a cada maquina nova nao escala, e esquecer aparece como 404 no meio de um
+# lote. O worker baixa EM SEGUNDO PLANO, sem tomar o lock da GPU — um download
+# e rede e disco, e prender a placa por dez minutos enquanto baixa seria pior
+# que o problema. O pedido que disparou o download leva 503 `baixando_modelo`,
+# que os clientes ja sabem adiar.
+#
+# Desligue numa maquina com disco apertado ou sem saida para a internet: um
+# nome de modelo errado que por acaso exista no registro do Ollama baixa
+# gigabytes que ninguem pediu. Desligado, o comportamento e o de antes — o
+# Ollama responde 404 e o cliente desiste.
+BAIXAR_MODELO_AUTOMATICO = _booleano("BAIXAR_MODELO_AUTOMATICO", True)
+
+# Teto para UM download, em segundos. Generoso de proposito: um modelo grande
+# numa conexao domestica passa de meia hora, e desistir no meio joga fora o que
+# ja veio.
+OLLAMA_PULL_TIMEOUT = _decimal("OLLAMA_PULL_TIMEOUT", 3600.0)
+
+# Por quanto tempo um download que FALHOU e lembrado, em segundos.
+#
+# Ele existe contra o laco: sem memoria da falha, cada retentativa do cliente
+# dispara um download novo do mesmo modelo que nao existe, para sempre. Com
+# memoria eterna, uma queda de rede exigiria reiniciar o servico. Lembrar por
+# alguns minutos faz o cliente desistir (404) e ainda assim deixa a maquina se
+# curar sozinha depois.
+FALHA_DE_DOWNLOAD_LEMBRADA = _inteiro("FALHA_DE_DOWNLOAD_LEMBRADA", 600)
+
 # Descarregar o modelo de texto da VRAM antes de um trabalho de imagem.
 #
 # E o ponto do arbitro existir. Numa placa de 8 GB um modelo de texto grande

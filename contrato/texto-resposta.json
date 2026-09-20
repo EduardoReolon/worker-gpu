@@ -1,5 +1,5 @@
 {
-  "_contrato_versao": "2.1",
+  "_contrato_versao": "2.2",
   "_rota": "POST /v1/chat/completions",
   "_nota": "Repassado do Ollama, no dialeto da OpenAI. `stream` nao e aceito.",
   "_nota_dialeto": "Um pedido que traz `options` (ex. num_ctx) ou `keep_alive` e roteado pelo /api/chat do Ollama e traduzido de volta para ESTA forma, porque a camada compativel do Ollama descarta `options` em silencio. A forma da resposta e a mesma pelos dois caminhos, e um teste do worker confere isso. `created` pode vir junto; clientes devem ignorar campo que nao conhecem.",

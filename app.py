@@ -48,6 +48,7 @@ from fastapi import FastAPI
 
 import conversao
 import imagem
+import modelos
 import ollama
 import texto
 from arbitro import ARBITRO
@@ -60,7 +61,7 @@ logger = logging.getLogger("worker-gpu")
 # ai quem integra precisa olhar, e `INTEGRACAO.md` ganha uma secao.
 # Acrescentar campo nao quebra ninguem e nao sobe nada: todo cliente deve
 # ignorar o que nao conhece.
-CONTRATO_VERSAO = "2.1"
+CONTRATO_VERSAO = "2.2"
 
 app = FastAPI(title="worker-gpu", version=CONTRATO_VERSAO)
 
@@ -118,6 +119,11 @@ def _bloco_do_ollama() -> dict:
         "de_pe": ollama.esta_de_pe(),
         "carregados": ollama.modelos_carregados(detalhe),
         "carregados_detalhe": detalhe,
+        # Downloads em curso. Sem isto, um lote inteiro levando
+        # `baixando_modelo` nao teria como ser distinguido, de fora, de um
+        # worker travado — e o download nao aparece em `ocupada`, porque ele
+        # nao usa a placa.
+        "baixando": modelos.estado(),
     }
 
 

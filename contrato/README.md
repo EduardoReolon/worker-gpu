@@ -10,6 +10,9 @@ contrato que so vive na cabeca de quem escreveu diverge no primeiro mes.
     ocupada-resposta.json    qualquer rota, quando a GPU esta em uso
     saude-resposta.json      GET  /health/
 
+Os codigos de `error.code` vivem no `ocupada-resposta.json`, com uma nota
+por codigo dizendo se o cliente deve adiar ou desistir.
+
 O `saude-resposta.json` chegou por ultimo, e a demora custou caro: o `/health/`
 e o endpoint que TODO cliente consulta para diagnosticar, e era o unico sem
 exemplo publicado. Quando as tres rotas viraram um servico so, o estado passou

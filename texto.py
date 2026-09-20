@@ -16,6 +16,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 
+import modelos
 import ollama
 import respostas
 from arbitro import ARBITRO, GpuOcupada
@@ -54,6 +55,19 @@ def chat(corpo: dict):
             "streaming nao e suportado: o arbitro precisa saber quando o "
             "trabalho termina para soltar a placa. Use `stream: false`.",
         )
+
+    try:
+        # ANTES do lock, e de proposito: se o modelo nao estiver no disco, isto
+        # dispara o download em segundo plano e levanta. Baixar com o lock na
+        # mao prenderia a placa por dezenas de minutos — a imagem e a conversao
+        # ficariam em 503 por causa de um modelo de texto que nem carregou.
+        modelos.conferir(corpo.get("model"))
+    except modelos.Baixando as erro:
+        return respostas.indisponivel("baixando_modelo", str(erro), retry_after=erro.tentar_em)
+    except modelos.NaoDisponivel as erro:
+        # 404 e nao 503: o modelo nao existe e nao vai passar a existir
+        # sozinho. Um 503 aqui poria o cliente a reagendar para sempre.
+        return JSONResponse({"error": {"message": str(erro)}}, status_code=404)
 
     try:
         # O modelo vem do cliente, intacto. Quem chama decide — o CRM tem um
@@ -100,7 +114,7 @@ def _mensagem_do_ollama(status: int, dados: dict) -> str:
 
 
 @router.get("/v1/models", dependencies=[Depends(conferir)])
-def modelos():
+def catalogo():
     """O catalogo, no formato que os clientes do dialeto OpenAI esperam.
 
     Inclui os modelos de texto do Ollama e, quando a geracao de imagem esta

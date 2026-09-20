@@ -88,6 +88,7 @@ Quatro códigos, e eles pedem coisas diferentes:
 | `ollama_indisponivel` | o Ollama caiu, reinicia, ou respondeu 5xx | sim | idem; se persistir por horas, alertar |
 | `sem_vram` | a placa não tem espaço agora | sim | idem, com paciência maior |
 | `timeout` | o trabalho passou do orçamento | **não** | **não repita igual** — reduza o pedido |
+| `baixando_modelo` | o modelo pedido não estava no disco e está sendo baixado | sim | reagendar; o `Retry-After` vem do progresso real |
 
 **Todo 503 que sai do worker tem `error.code`.** Não existe 503 sem código:
 mesmo um 5xx vindo do Ollama é envelopado nesta forma antes de sair. Se você
@@ -184,11 +185,64 @@ intacto — o `model` que você mandar é o que roda. Um CRM com modelo por tena
 e um padrão de sistema funciona sem nada especial aqui: o worker arbitra a
 placa, não a escolha.
 
-Dois limites honestos: o modelo precisa existir no Ollama da máquina
-(`GET /v1/models` lista), e trocar de modelo **custa**. Com
+Um limite honesto: trocar de modelo **custa**. Com
 `OLLAMA_MAX_LOADED_MODELS=1` — a configuração recomendada numa placa só — um
 modelo diferente expulsa o que estava carregado. Não é falha, é tempo: o
 próximo pedido espera o carregamento.
+
+### Modelo que ainda não está na máquina
+
+**Não precisa pré-baixar.** Se você pedir um modelo que não está no disco, o
+worker o baixa sozinho, em segundo plano, e te responde:
+
+```http
+HTTP/1.1 503 Service Unavailable
+Retry-After: 240
+
+{"error": {"code": "baixando_modelo",
+           "message": "o modelo 'llama3.1:8b' esta sendo baixado (37%)"}}
+```
+
+Você reagenda como em qualquer 503. Os pedidos seguintes recebem o mesmo
+código com o progresso atualizado, e o `Retry-After` **encolhe conforme o
+download anda** — ele é calculado do ritmo real, não é constante. Quando
+termina, o próximo pedido passa normalmente.
+
+**O download não toma a placa.** Ele é rede e disco: a rota de imagem e a de
+conversão seguem funcionando durante ele, e `ocupada` continua `false` no
+`/health/`. Quem quiser acompanhar:
+
+```bash
+curl -s http://<worker>:8090/health/ | jq '.ollama.baixando'
+# [{"modelo": "llama3.1:8b", "porcento": 37.4, "ha_segundos": 95}]
+```
+
+#### Se o download falhar, você recebe 404 — e deve desistir
+
+Essa é a parte que importa para a sua fila. Um nome de modelo que não existe
+no registro do Ollama **não** vira 503 eterno:
+
+| Quando | Você recebe | O que fazer |
+|---|---|---|
+| primeiro pedido, modelo ausente | `503 baixando_modelo` | reagendar |
+| enquanto baixa | `503 baixando_modelo` | reagendar |
+| o download falhou | **`404`**, com a mensagem da falha | **falhar o trabalho** — o nome está errado, ou a máquina não alcança o registro |
+| baixou | `200` | nada |
+
+O worker lembra a falha por alguns minutos justamente para o seu cliente
+receber um 404 em vez de disparar um download novo a cada retentativa. Passado
+esse prazo ele tenta de novo sozinho, então uma queda de rede se cura sem
+ninguém reiniciar nada.
+
+#### O que isso custa
+
+Gigabytes de disco, sem ninguém aprovar. **Um nome de modelo errado que por
+acaso exista no registro do Ollama vai ser baixado.** Se a sua lista de
+modelos vem de um banco onde alguém digita o nome, esse é o risco real —
+confira os nomes contra `GET /v1/models` quando cadastrar, não quando usar.
+
+O dono da máquina desliga isso com `BAIXAR_MODELO_AUTOMATICO=nao` no `.env`, e
+aí o comportamento volta a ser o antigo: o Ollama responde 404 na hora.
 
 ### A janela de contexto, por pedido
 
@@ -555,8 +609,6 @@ Compare de vez em quando — ou num teste, se o seu CI alcança o worker. Versã
 maior diferente significa que algo mudou de forma incompatível, e há uma seção
 nova neste arquivo explicando o quê.
 
-## O que mudou na 2.1
-
 Acréscimos e um ajuste de cabeçalho. Nada some e nada muda de tipo, mas dois
 pontos merecem olhada:
 
@@ -573,6 +625,17 @@ pontos merecem olhada:
   cabeçalho — a única forma de 503 que saía daqui sem nada para decidir;
 - **`/health/` ganhou `ollama.carregados_detalhe`** e passou a nunca responder
   500. `ollama.carregados` continua sendo a lista de nomes, intocada;
+## O que mudou na 2.2
+
+- **modelo ausente passou a ser baixado sozinho**, em segundo plano e sem
+  tomar a placa. O pedido que disparou recebe `503 baixando_modelo`; um
+  download que falha vira `404`, para o cliente desistir em vez de reagendar.
+  Código novo — se o seu cliente trata código desconhecido como adiável com
+  teto (como este guia manda), ele já funciona sem mudança;
+- **`/health/` ganhou `ollama.baixando`**, com o progresso de cada download.
+
+## O que mudou na 2.1
+
 - **`options` passou a funcionar.** `options.num_ctx` e `options.num_predict`
   eram descartados em silêncio pela camada compatível do Ollama; agora um
   pedido que traz `options` (ou `keep_alive`) é roteado pelo dialeto nativo e
@@ -592,6 +655,7 @@ pontos merecem olhada:
 - [ ] **Teto de adiamentos**, senão um pedido impossível gira para sempre
 - [ ] `error.code == "timeout"` não é repetido igual
 - [ ] `error.code` desconhecido **adia com teto**, nunca falha definitiva
+- [ ] `baixando_modelo` adia; o **404** que vem depois dele faz o trabalho falhar
 - [ ] 400/404/422 **falham**, não adiam
 - [ ] `ConnectionError` (restart do worker) entra no mesmo teto
 - [ ] Sem `stream: true`

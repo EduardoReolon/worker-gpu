@@ -41,13 +41,14 @@ pelo cliente, por vir no pedido, e honrado.
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 
 import httpx
 
 import dialeto
-from config import OLLAMA_TIMEOUT, OLLAMA_URL
+from config import OLLAMA_PULL_TIMEOUT, OLLAMA_TIMEOUT, OLLAMA_URL
 
 logger = logging.getLogger("worker-gpu.ollama")
 
@@ -247,6 +248,49 @@ def conversar(corpo: dict, cabecalhos: dict[str, str]) -> tuple[int, dict]:
     # Erro do nativo normalizado para a forma da OpenAI: o mesmo erro nao pode
     # chegar ao cliente em duas formas conforme o caminho que ele nem escolheu.
     return resposta.status_code, dialeto.erro_para_openai(dados)
+
+
+def baixar(nome: str, ao_progredir=None) -> None:
+    """Baixa um modelo (`/api/pull`). Levanta se nao der.
+
+    Chamado de uma THREAD, e nunca de dentro do lock da GPU: um download e rede
+    e disco, e prender a placa por dez minutos enquanto baixa seria pior que o
+    404 que ele evita. Enquanto isso a imagem e a conversao seguem usando a
+    placa normalmente.
+
+    Le a resposta em streaming — que aqui e permitido, ao contrario da geracao,
+    porque quem espera e uma thread do worker e nao uma requisicao HTTP aberta.
+    E do streaming que sai o progresso, e o progresso e o que faz o
+    `Retry-After` do 503 valer alguma coisa: "volte em 60s" com 5% baixados e
+    um 503 garantido.
+    """
+    with _obter_cliente().stream(
+        "POST",
+        "/api/pull",
+        json={"model": nome, "stream": True},
+        timeout=OLLAMA_PULL_TIMEOUT,
+    ) as resposta:
+        if not resposta.is_success:
+            resposta.read()
+            raise OllamaIndisponivel(f"o Ollama recusou baixar {nome!r}: {resposta.text[:300]}")
+
+        for linha in resposta.iter_lines():
+            if not linha.strip():
+                continue
+            try:
+                evento = json.loads(linha)
+            except ValueError:
+                continue
+
+            # O erro vem NO CORPO de um stream com status 200. Sem esta
+            # conferencia, um modelo inexistente terminaria o laco sem
+            # excecao e o worker o daria por baixado.
+            if evento.get("error"):
+                raise OllamaIndisponivel(f"falha ao baixar {nome!r}: {evento['error']}")
+
+            total, feito = evento.get("total"), evento.get("completed")
+            if ao_progredir and total:
+                ao_progredir(min(100.0, 100.0 * (feito or 0) / total))
 
 
 def modelos_no_disco() -> list[str]:

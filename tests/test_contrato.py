@@ -246,6 +246,7 @@ def test_a_resposta_do_health_tem_a_forma_publicada(worker, monkeypatch):
     `ollama.carregados` de lista de nomes para lista de objetos passa a ser
     uma falha visivel, e nao uma surpresa no outro repositorio.
     """
+    import modelos
     import ollama
 
     monkeypatch.setattr(
@@ -254,6 +255,13 @@ def test_a_resposta_do_health_tem_a_forma_publicada(worker, monkeypatch):
         lambda: [{"name": "qwen2.5:7b-instruct", "context_length": 4096}],
     )
     monkeypatch.setattr(ollama, "esta_de_pe", lambda: True)
+    # Um download em curso, para o exemplo poder descrever a FORMA do item.
+    # Uma lista vazia no exemplo nao descreveria nada.
+    monkeypatch.setattr(
+        modelos,
+        "estado",
+        lambda: [{"modelo": "llama3.1:8b", "porcento": 37.4, "ha_segundos": 95}],
+    )
 
     resposta = TestClient(worker.app).get("/health/")
 

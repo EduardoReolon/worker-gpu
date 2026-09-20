@@ -223,7 +223,9 @@ journalctl --user -u worker-gpu -f
 | `ha_segundos` alto e parado | trabalho preso segurando o lock. O lock não tem watchdog: ele solta em `OLLAMA_TIMEOUT` |
 | `/health/` dá `timed out` | um handler bloqueante no event loop — nenhum deveria ser `async def` |
 | um cliente diz que o prompt de sistema some | janela de contexto pequena. Veja `ollama.carregados_detalhe[].context_length` no `/health/` |
-| `baixado: false` | rode `baixar_modelo.py` antes do primeiro uso |
+| `baixado: false` | rode `baixar_modelo.py` antes do primeiro uso (isto e o modelo de IMAGEM; os de texto o worker baixa sozinho) |
+| `503 baixando_modelo` | o modelo de texto pedido nao estava no disco. Acompanhe em `ollama.baixando` no `/health/` |
+| `404` num modelo que deveria existir | o download falhou; a mensagem diz por que. Confira o nome contra `ollama list` |
 | `ultimo_dispositivo: cpu` | caiu para CPU. Com `IMAGEM_PERMITIR_CPU=nao` isso não deveria acontecer |
 | uvicorn morre no boot | `BIND_HOST` inexistente, ou `BIND_PORT` vazio |
 
