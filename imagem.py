@@ -287,7 +287,11 @@ def gerar(pedido: PedidoDeImagem):
                 imagens = gerar_imagens(dispositivo, pedido, quantas, largura, altura)
             except TempoEsgotado as exc:
                 logger.warning("%s", exc)
-                return respostas.indisponivel("timeout", str(exc), retry_after=300)
+                # Sem `Retry-After`: para o codigo `timeout` a documentacao
+                # manda reduzir o pedido, e nao voltar igual mais tarde. Mandar
+                # o cabecalho junto seria o contrato se contradizendo dentro da
+                # mesma resposta.
+                return respostas.indisponivel("timeout", str(exc), retry_after=None)
             except Exception as exc:
                 if not _e_falta_de_vram(exc) or dispositivo == "cpu":
                     raise

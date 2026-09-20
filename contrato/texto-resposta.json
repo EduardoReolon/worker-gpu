@@ -1,5 +1,5 @@
 {
-  "_contrato_versao": "2.0",
+  "_contrato_versao": "2.1",
   "_rota": "POST /v1/chat/completions",
   "_nota": "Repassado do Ollama, no dialeto da OpenAI. `stream` nao e aceito.",
   "id": "chatcmpl-123",

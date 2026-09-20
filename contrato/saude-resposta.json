@@ -1,0 +1,44 @@
+{
+  "_contrato_versao": "2.1",
+  "_rota": "GET /health/ (sem credencial, de proposito)",
+  "_nota": "Este endpoint NUNCA devolve 500. Um bloco que falha ao ser coletado vira {\"erro\": \"<tipo>: <mensagem>\"} no lugar do bloco, com HTTP 200 — o processo esta de pe, e e isso que o 200 afirma. Os blocos `imagem` e `conversao` so aparecem quando a rota correspondente esta ligada (veja `rotas`).",
+  "_nota_carregados": "`carregados` e a lista de NOMES e continua sendo `list[str]`. `carregados_detalhe` e o registro do `/api/ps` do Ollama repassado; o worker garante que cada item tem `name`, e o RESTO das chaves e do Ollama e varia com a versao dele. `context_length` e a janela com que o modelo foi carregado — e uma dica de MAQUINA, nao confirmacao de que um pedido especifico rodou com ela.",
+  "status": "ok",
+  "service": "worker-gpu",
+  "contrato_versao": "2.1",
+  "ocupada": false,
+  "ocupante": null,
+  "modelo": null,
+  "ha_segundos": 0,
+  "rotas": {
+    "texto": true,
+    "imagem": true,
+    "conversao": true
+  },
+  "ollama": {
+    "de_pe": true,
+    "carregados": ["qwen2.5:7b-instruct"],
+    "carregados_detalhe": [
+      {
+        "name": "qwen2.5:7b-instruct",
+        "context_length": 4096
+      }
+    ]
+  },
+  "imagem": {
+    "modelo": "stabilityai/stable-diffusion-xl-base-1.0",
+    "dispositivo": "auto",
+    "ultimo_dispositivo": "cuda",
+    "baixado": true,
+    "carregado": false,
+    "passos": 25,
+    "permite_cpu": false,
+    "tempo_maximo": 600
+  },
+  "conversao": {
+    "dispositivo": "auto",
+    "ocr": false,
+    "threads": "auto",
+    "carregado": true
+  }
+}

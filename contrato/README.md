@@ -8,6 +8,15 @@ contrato que so vive na cabeca de quem escreveu diverge no primeiro mes.
     imagem-resposta.json     POST /v1/images/generations
     conversao-resposta.json  POST /parse/
     ocupada-resposta.json    qualquer rota, quando a GPU esta em uso
+    saude-resposta.json      GET  /health/
+
+O `saude-resposta.json` chegou por ultimo, e a demora custou caro: o `/health/`
+e o endpoint que TODO cliente consulta para diagnosticar, e era o unico sem
+exemplo publicado. Quando as tres rotas viraram um servico so, o estado passou
+a vir aninhado e `busy` virou `ocupada` na raiz — um cliente continuou lendo as
+chaves antigas, `dict.get` devolveu `None`, e os avisos de diagnostico dele
+sumiram sem erro nenhum, por semanas. Com o exemplo no lugar, uma mudanca de
+forma quebra a suite DAQUI, e nao um cliente em producao.
 
 ## Como eles se mantem honestos
 

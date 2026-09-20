@@ -94,9 +94,20 @@ CONF
 sudo systemctl daemon-reload && sudo systemctl restart ollama
 ```
 
-`OLLAMA_KEEP_ALIVE` deixa de ser crítico: o worker descarrega o modelo quando
+**`OLLAMA_KEEP_ALIVE` se ajusta aqui, no serviço do Ollama** — o worker não o
+envia. Ele já enviou, e foi removido: `keep_alive` não é campo do dialeto da
+OpenAI, e o proxy fala esse dialeto, então a camada compatível descartava a
+chave. A variável existia no `.env` do worker e não tinha efeito nenhum.
+
+Ele deixa de ser crítico de qualquer forma: o worker descarrega o modelo quando
 precisa da placa para imagem. Mantê-lo alto passa a ser vantagem — o texto não
 recarrega à toa.
+
+Pelo mesmo motivo, **`OLLAMA_CONTEXT_LENGTH` é o lugar de ajustar a janela de
+contexto global**: um `options.num_ctx` mandado pelo cliente é descartado antes
+de chegar ao modelo. Janela por modelo se embute num Modelfile
+(`PARAMETER num_ctx`). O `INTEGRACAO.md` explica o que isso significa para quem
+integra, e como detectar truncamento.
 
 ### O Docling (conversão de PDF)
 
@@ -202,8 +213,12 @@ journalctl --user -u worker-gpu -f
 | `503 gpu_ocupada` | funcionando como projetado; o cliente deve voltar depois |
 | `503 sem_vram` | o Ollama não soltou a placa. Veja `ollama.carregados` no `/health/` |
 | um cliente sempre paga troca de modelo | `/health/` diz `modelo` (em uso) e `ollama.carregados` (residentes); veja a afinidade no `INTEGRACAO.md` |
-| `503 ollama_indisponivel` | o Ollama caiu, ou `OLLAMA_URL` está errado |
+| `503 ollama_indisponivel` | o Ollama caiu, `OLLAMA_URL` está errado, ou o Ollama respondeu 5xx |
+| `503 timeout` no texto | o pedido não coube em `OLLAMA_TIMEOUT`. Prompt grande demais, ou modelo lento demais para o orçamento |
+| `/health/` com um bloco `{"erro": ...}` | aquela parte falhou ao ser coletada; o resto do corpo continua válido |
+| `ha_segundos` alto e parado | trabalho preso segurando o lock. O lock não tem watchdog: ele solta em `OLLAMA_TIMEOUT` |
 | `/health/` dá `timed out` | um handler bloqueante no event loop — nenhum deveria ser `async def` |
+| um cliente diz que o prompt de sistema some | janela de contexto pequena. Veja `ollama.carregados_detalhe[].context_length` no `/health/` |
 | `baixado: false` | rode `baixar_modelo.py` antes do primeiro uso |
 | `ultimo_dispositivo: cpu` | caiu para CPU. Com `IMAGEM_PERMITIR_CPU=nao` isso não deveria acontecer |
 | uvicorn morre no boot | `BIND_HOST` inexistente, ou `BIND_PORT` vazio |

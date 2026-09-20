@@ -51,7 +51,17 @@ SEGREDO = os.environ.get("WORKER_SHARED_SECRET", "")
 # O worker e o unico que fala com o Ollama. Ele escuta em loopback e NAO deve
 # estar exposto na rede — quem publica e o worker, que arbitra.
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
-OLLAMA_TIMEOUT = _decimal("OLLAMA_TIMEOUT", 600.0)
+
+# Orcamento de tempo de UM pedido de texto, em segundos.
+#
+# 540 e nao 600, e a diferenca e o ponto: o `INTEGRACAO.md` sugere 600s de
+# timeout no cliente. Iguais, os dois relogios disparam juntos — e o do cliente
+# comeca antes, porque o daqui so parte depois de o pedido chegar, passar pela
+# credencial e tomar o lock. O cliente desistia primeiro e abandonava um
+# trabalho que ainda estava segurando a placa, que e exatamente o que a
+# documentacao diz querer evitar. Com 540 quem desiste primeiro e o worker, e
+# ele desiste devolvendo um 503 legivel em vez de um socket cortado.
+OLLAMA_TIMEOUT = _decimal("OLLAMA_TIMEOUT", 540.0)
 
 # Descarregar o modelo de texto da VRAM antes de um trabalho de imagem.
 #
@@ -61,11 +71,16 @@ OLLAMA_TIMEOUT = _decimal("OLLAMA_TIMEOUT", 600.0)
 # ninguem esta gerando texto naquele instante.
 OLLAMA_DESCARREGAR_PARA_IMAGEM = _booleano("OLLAMA_DESCARREGAR_PARA_IMAGEM", True)
 
-# Quanto tempo o Ollama mantem o modelo carregado depois de responder. Enviado
-# em cada pedido, entao vale mesmo sem mexer no servico dele.
+# Havia aqui um OLLAMA_KEEP_ALIVE, injetado no corpo de cada pedido de texto.
+# Foi REMOVIDO: `keep_alive` nao e campo do dialeto da OpenAI, e o proxy fala
+# esse dialeto — a camada compativel do Ollama descartava a chave na
+# desserializacao. A variavel existia, aparecia no `.env`, e nao tinha efeito
+# nenhum. Configuracao que mente e pior que configuracao ausente, porque
+# alguem confia nela.
 #
-# Vazio = nao mexer, e ai vale o padrao do Ollama (5 min).
-OLLAMA_KEEP_ALIVE = os.environ.get("OLLAMA_KEEP_ALIVE", "")
+# Enquanto o proxy nao falar `/api/chat`, a politica de memoria desta maquina
+# se ajusta no Ollama (OLLAMA_KEEP_ALIVE no ambiente DELE, ou `PARAMETER` num
+# Modelfile), e nao aqui.
 
 
 # ---------------------------------------------------------------------------

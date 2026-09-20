@@ -31,11 +31,21 @@ def ocupada(erro: GpuOcupada) -> JSONResponse:
     return JSONResponse({"error": corpo}, status_code=503, headers={"Retry-After": str(erro.falta)})
 
 
-def indisponivel(codigo: str, mensagem: str, *, retry_after: int = 60) -> JSONResponse:
+def indisponivel(codigo: str, mensagem: str, *, retry_after: int | None = 60) -> JSONResponse:
     """503 para o que e transitorio e nao e disputa de GPU: o Ollama fora do
-    ar, a VRAM que nao coube, o tempo que estourou."""
+    ar, a VRAM que nao coube, o tempo que estourou.
+
+    `retry_after=None` OMITE o cabecalho, e existe para um caso so: o
+    `timeout`. Para esse codigo a documentacao manda "nao repita igual, reduza
+    o pedido" — mandar junto um `Retry-After` seria o contrato se contradizendo
+    dentro da mesma resposta, e um cliente que obedece cabecalho antes de ler
+    corpo obedeceria o errado. Cabecalho ausente e mais dificil de seguir por
+    engano do que cabecalho presente que a doc pede para ignorar.
+    """
+    cabecalhos = {} if retry_after is None else {"Retry-After": str(retry_after)}
+
     return JSONResponse(
         {"error": {"code": codigo, "message": mensagem}},
         status_code=503,
-        headers={"Retry-After": str(retry_after)},
+        headers=cabecalhos,
     )

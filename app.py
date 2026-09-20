@@ -60,7 +60,7 @@ logger = logging.getLogger("worker-gpu")
 # ai quem integra precisa olhar, e `INTEGRACAO.md` ganha uma secao.
 # Acrescentar campo nao quebra ninguem e nao sobe nada: todo cliente deve
 # ignorar o que nao conhece.
-CONTRATO_VERSAO = "2.0"
+CONTRATO_VERSAO = "2.1"
 
 app = FastAPI(title="worker-gpu", version=CONTRATO_VERSAO)
 
@@ -78,6 +78,49 @@ if CONVERSAO_ATIVA:
     app.include_router(conversao.router)
 
 
+def _bloco(nome: str, coletar):
+    """Um bloco do `/health/`, ou a descricao do erro no lugar dele.
+
+    O `/health/` NUNCA pode devolver 500. Ele e o endpoint que o instalador, o
+    systemd e quem esta diagnosticando consultam, e uma excecao ali transforma
+    "alguma coisa esta errada" em "tudo esta errado e nao sei o que". Um bloco
+    que falha vira `{"erro": "<tipo>: <mensagem>"}` DENTRO do corpo, com 200 —
+    o processo esta de pe, e e isso que o 200 afirma.
+
+    Pelo mesmo motivo que ele dispensa credencial: um diagnostico que precisa
+    de segredo nao serve para descobrir por que o segredo nao funciona, e um
+    diagnostico que estoura nao serve para descobrir o que estourou.
+    """
+    try:
+        return coletar()
+    except Exception as erro:
+        logger.exception("Falha ao montar o bloco %r do /health/", nome)
+        return {"erro": f"{type(erro).__name__}: {erro}"}
+
+
+def _bloco_do_ollama() -> dict:
+    """Estado do Ollama, numa ida so ao `/api/ps`.
+
+    `carregados` continua sendo a lista de NOMES: e o campo publicado, e ha
+    cliente lendo. `carregados_detalhe` e o registro inteiro, e existe por um
+    motivo: e nele que vem o `context_length` com que cada modelo foi
+    carregado. Janela errada e o defeito que nao aparece — 200, JSON valido,
+    schema respeitado, e o modelo nao viu o inicio do prompt de sistema.
+
+    O campo e uma dica de MAQUINA ("esta configurada errada"), e nao uma
+    confirmacao de PEDIDO: ele e lido por outra viagem, depois, e entre a
+    inferencia e a leitura outro cliente pode ter recarregado o modelo com
+    outra janela.
+    """
+    detalhe = ollama.modelos_carregados_detalhe()
+
+    return {
+        "de_pe": ollama.esta_de_pe(),
+        "carregados": ollama.modelos_carregados(detalhe),
+        "carregados_detalhe": detalhe,
+    }
+
+
 @app.get("/health/")
 def health():
     """Estado, sem credencial.
@@ -90,9 +133,12 @@ def health():
     `def` e nao `async def`: ele toca disco, e no event loop uma leitura
     lenta atrasaria todo o resto. (Foi um `async def` num handler bloqueante
     que fez este servico parar de responder enquanto gerava.)
-    """
-    ocupacao = ARBITRO.ocupacao
 
+    A forma desta resposta esta em `contrato/saude-resposta.json`, e um teste
+    confere que as duas nao divergem. Sem isso o endpoint que todo mundo usa
+    para diagnosticar era o unico sem exemplo publicado — e ja mudou de forma
+    uma vez sem quebrar nada ate doer.
+    """
     corpo = {
         "status": "ok",
         "service": "worker-gpu",
@@ -100,25 +146,31 @@ def health():
         # copiou para os testes dele. Sem um numero publicado, a copia velha
         # do cliente nao tem como se denunciar.
         "contrato_versao": CONTRATO_VERSAO,
-        "ocupada": ocupacao is not None,
-        "ocupante": ocupacao.tarefa if ocupacao else None,
-        # Qual modelo esta em uso agora. Quem planeja um lote le isto junto
-        # com `ollama.carregados` para escolher pedidos que nao paguem troca.
-        "modelo": ocupacao.modelo if ocupacao else None,
-        "ha_segundos": ocupacao.ha_quantos_segundos if ocupacao else 0,
-        "rotas": {
-            "texto": True,
-            "imagem": IMAGEM_ATIVA,
-            "conversao": CONVERSAO_ATIVA,
-        },
-        "ollama": {
-            "de_pe": ollama.esta_de_pe(),
-            "carregados": ollama.modelos_carregados(),
-        },
     }
+
+    try:
+        ocupacao = ARBITRO.ocupacao
+    except Exception as erro:
+        logger.exception("Falha ao ler a ocupacao para o /health/")
+        ocupacao = None
+        corpo["arbitro"] = {"erro": f"{type(erro).__name__}: {erro}"}
+
+    corpo["ocupada"] = ocupacao is not None
+    corpo["ocupante"] = ocupacao.tarefa if ocupacao else None
+    # Qual modelo esta em uso agora. Quem planeja um lote le isto junto com
+    # `ollama.carregados` para escolher pedidos que nao paguem troca.
+    corpo["modelo"] = ocupacao.modelo if ocupacao else None
+    corpo["ha_segundos"] = ocupacao.ha_quantos_segundos if ocupacao else 0
+    corpo["rotas"] = {
+        "texto": True,
+        "imagem": IMAGEM_ATIVA,
+        "conversao": CONVERSAO_ATIVA,
+    }
+    corpo["ollama"] = _bloco("ollama", _bloco_do_ollama)
+
     if IMAGEM_ATIVA:
-        corpo["imagem"] = imagem.estado()
+        corpo["imagem"] = _bloco("imagem", imagem.estado)
     if CONVERSAO_ATIVA:
-        corpo["conversao"] = conversao.estado()
+        corpo["conversao"] = _bloco("conversao", conversao.estado)
 
     return corpo

@@ -33,6 +33,7 @@ def cliente(worker, monkeypatch):
     monkeypatch.setattr(ollama, "conversar", lambda corpo, cab: (200, _RESPOSTA_DE_TEXTO))
     monkeypatch.setattr(ollama, "modelos_no_disco", lambda: ["qwen2.5:7b-instruct"])
     monkeypatch.setattr(ollama, "modelos_carregados", list)
+    monkeypatch.setattr(ollama, "modelos_carregados_detalhe", list)
     monkeypatch.setattr(ollama, "esta_de_pe", lambda: True)
     return TestClient(worker.app)
 
@@ -246,3 +247,164 @@ def test_arquivo_grande_demais_e_recusado(worker, cabecalhos, monkeypatch):
     )
 
     assert resposta.status_code == 413
+
+
+# ---------------------------------------------------------------------------
+# Adiar ou desistir: o que o 503 diz ao cliente
+# ---------------------------------------------------------------------------
+def test_o_estouro_de_orcamento_vira_timeout_sem_retry_after(cliente, cabecalhos, monkeypatch):
+    """Antes isto chegava como `ollama_indisponivel` — "o Ollama caiu", que e
+    transitorio — e o cliente reagendava um pedido que nunca ia caber, para
+    sempre. O codigo `timeout` ja estava documentado; era so inalcancavel.
+
+    E vai SEM `Retry-After`: para esse codigo a orientacao e reduzir o pedido.
+    Mandar o cabecalho junto seria o contrato se contradizendo dentro da mesma
+    resposta, e cabecalho ausente e mais dificil de obedecer por engano do que
+    cabecalho presente que a doc pede para ignorar.
+    """
+    import ollama
+
+    def estourar(*a, **k):
+        raise ollama.OllamaDemorouDemais("passou dos 540s")
+
+    monkeypatch.setattr(ollama, "conversar", estourar)
+
+    resposta = cliente.post(
+        "/v1/chat/completions",
+        json={"messages": [{"role": "user", "content": "oi"}]},
+        headers=cabecalhos,
+    )
+
+    assert resposta.status_code == 503
+    assert resposta.json()["error"]["code"] == "timeout"
+    assert "Retry-After" not in resposta.headers
+
+
+@pytest.mark.parametrize("status", [502, 503, 504])
+def test_o_5xx_do_ollama_ganha_codigo_e_retry_after(cliente, cabecalhos, monkeypatch, status):
+    """Repassado cru, um 503 do upstream chegava sem `error.code` e sem
+    `Retry-After` — a unica forma de 503 que saia daqui sem nada para decidir.
+    Um cliente que ramifica por codigo lia "adiavel, desconhecido" e
+    reagendava para sempre.
+
+    502 e 504 entram junto porque `OLLAMA_URL` aceita qualquer endereco:
+    apontando para um proxy reverso, sao esses que aparecem no lugar do 503.
+    """
+    import ollama
+
+    monkeypatch.setattr(
+        ollama, "conversar", lambda corpo, cab: (status, {"error": {"message": "server busy"}})
+    )
+
+    resposta = cliente.post(
+        "/v1/chat/completions",
+        json={"messages": [{"role": "user", "content": "oi"}]},
+        headers=cabecalhos,
+    )
+
+    assert resposta.status_code == 503
+    assert resposta.json()["error"]["code"] == "ollama_indisponivel"
+    assert int(resposta.headers["Retry-After"]) > 0
+    # O envelope troca a FORMA, nunca o diagnostico.
+    assert "server busy" in resposta.json()["error"]["message"]
+
+
+@pytest.mark.parametrize(
+    "status,corpo",
+    [
+        (404, {"error": {"message": 'model "x" not found, try pulling it first'}}),
+        (400, {"error": {"message": "invalid json schema"}}),
+    ],
+)
+def test_o_4xx_do_ollama_passa_verbatim(cliente, cabecalhos, monkeypatch, status, corpo):
+    """ "Seu pedido esta errado" e informacao, e o cliente precisa dela para
+    desistir em vez de reagendar. Traduzir para 503 apagaria o que o Ollama
+    tinha a dizer e transformaria um erro permanente em fila eterna."""
+    import ollama
+
+    monkeypatch.setattr(ollama, "conversar", lambda c, cab: (status, corpo))
+
+    resposta = cliente.post(
+        "/v1/chat/completions",
+        json={"model": "x", "messages": [{"role": "user", "content": "oi"}]},
+        headers=cabecalhos,
+    )
+
+    assert resposta.status_code == status
+    assert resposta.json() == corpo
+
+
+# ---------------------------------------------------------------------------
+# O `/health/` nunca devolve 500
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "modulo,funcao,bloco", [("imagem", "estado", "imagem"), ("conversao", "estado", "conversao")]
+)
+def test_um_bloco_que_estoura_vira_campo_e_nao_500(worker, monkeypatch, modulo, funcao, bloco):
+    """E o endpoint de diagnostico: uma excecao nele transforma "alguma coisa
+    esta errada" em "tudo esta errado e nao sei o que". O processo esta de pe,
+    e e isso que o 200 afirma."""
+    import importlib
+
+    alvo = importlib.import_module(modulo)
+
+    def explodir():
+        raise RuntimeError("faltou alguma coisa")
+
+    monkeypatch.setattr(alvo, funcao, explodir)
+
+    resposta = TestClient(worker.app).get("/health/")
+
+    assert resposta.status_code == 200
+    assert resposta.json()[bloco]["erro"] == "RuntimeError: faltou alguma coisa"
+
+
+def test_o_bloco_do_ollama_que_estoura_tambem(worker, monkeypatch):
+    """`resposta.json()` levanta `ValueError`, que fica de fora de
+    `httpx.HTTPError` — era por aqui que o `/health/` caia."""
+    import ollama
+
+    def explodir():
+        raise ValueError("json invalido do /api/ps")
+
+    monkeypatch.setattr(ollama, "modelos_carregados_detalhe", explodir)
+
+    resposta = TestClient(worker.app).get("/health/")
+
+    assert resposta.status_code == 200
+    assert resposta.json()["ollama"]["erro"] == "ValueError: json invalido do /api/ps"
+
+
+def test_mesmo_com_um_bloco_quebrado_o_resto_continua_legivel(worker, monkeypatch):
+    """Um diagnostico so serve se os campos que AINDA funcionam aparecerem.
+    Em especial `ha_segundos`, que e o alarme de lock preso."""
+    import conversao
+
+    monkeypatch.setattr(conversao, "estado", lambda: (_ for _ in ()).throw(RuntimeError("x")))
+
+    corpo = TestClient(worker.app).get("/health/").json()
+
+    assert corpo["status"] == "ok"
+    assert corpo["ocupada"] is False
+    assert corpo["ha_segundos"] == 0
+    assert corpo["contrato_versao"]
+
+
+def test_o_health_nao_paga_duas_viagens_ao_api_ps(worker, monkeypatch):
+    """`carregados` e `carregados_detalhe` saem da MESMA consulta. Duas idas
+    ao Ollama por `/health/` seriam trabalho dobrado num endpoint que o
+    systemd consulta em laco."""
+    import ollama
+
+    idas = []
+    monkeypatch.setattr(
+        ollama,
+        "modelos_carregados_detalhe",
+        lambda: idas.append(1) or [{"name": "qwen2.5:7b-instruct", "context_length": 4096}],
+    )
+
+    corpo = TestClient(worker.app).get("/health/").json()
+
+    assert len(idas) == 1
+    assert corpo["ollama"]["carregados"] == ["qwen2.5:7b-instruct"]
+    assert corpo["ollama"]["carregados_detalhe"][0]["context_length"] == 4096

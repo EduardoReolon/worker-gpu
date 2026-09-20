@@ -73,12 +73,28 @@ Retry-After: 40
 
 Quatro códigos, e eles pedem coisas diferentes:
 
-| `error.code` | Significa | O que fazer |
-|---|---|---|
-| `gpu_ocupada` | outro trabalho está na placa | reagendar para daqui a `Retry-After` |
-| `ollama_indisponivel` | o Ollama caiu ou reinicia | idem; se persistir por horas, alertar |
-| `sem_vram` | a placa não tem espaço agora | idem, com paciência maior |
-| `timeout` | o trabalho passou do orçamento | **não repita igual** — reduza o pedido |
+| `error.code` | Significa | `Retry-After` | O que fazer |
+|---|---|---|---|
+| `gpu_ocupada` | outro trabalho está na placa | sim | reagendar para daqui a `Retry-After` |
+| `ollama_indisponivel` | o Ollama caiu, reinicia, ou respondeu 5xx | sim | idem; se persistir por horas, alertar |
+| `sem_vram` | a placa não tem espaço agora | sim | idem, com paciência maior |
+| `timeout` | o trabalho passou do orçamento | **não** | **não repita igual** — reduza o pedido |
+
+**Todo 503 que sai do worker tem `error.code`.** Não existe 503 sem código:
+mesmo um 5xx vindo do Ollama é envelopado nesta forma antes de sair. Se você
+receber um sem código, é bug do worker — abra issue.
+
+**O `timeout` vem sem `Retry-After`, de propósito.** Para esse código a
+orientação é reduzir o pedido, não voltar igual mais tarde; mandar o cabeçalho
+junto seria o contrato se contradizendo dentro da mesma resposta. Leia o
+cabeçalho com um padrão (`headers.get("Retry-After", 60)`), nunca com acesso
+direto.
+
+**Código que você não conhece: adie com teto, nunca desista.** Se um dia a
+lista crescer, um cliente que trate código desconhecido como falha definitiva
+quebra no dia do acréscimo. Trate como adiável, com teto de tentativas e log
+alto — o teto é o que impede o adiamento eterno, e ele protege você também nos
+códigos que você já conhece.
 
 **Nenhum deles é falha do seu trabalho.** Um 503 não deve consumir tentativa,
 não deve abrir disjuntor, e não deve marcar o trabalho como falho. Se o seu
@@ -106,9 +122,12 @@ Se o seu sistema tem orquestrador com passos, o padrão é este — separar
 "adiar" de "falhar":
 
 ```python
-resposta = requests.post(f"{WORKER}/v1/chat/completions", json=corpo,
-                         headers={"Authorization": f"Bearer {SEGREDO}"},
-                         timeout=600)
+resposta = requests.post(
+    f"{WORKER}/v1/chat/completions",
+    json=corpo,
+    headers={"Authorization": f"Bearer {SEGREDO}"},
+    timeout=600,
+)
 
 if resposta.status_code == 503:
     dados = resposta.json().get("error", {})
@@ -118,11 +137,31 @@ if resposta.status_code == 503:
         # Repetir igual daria o mesmo resultado. Reduza antes.
         raise TrabalhoPrecisaDeAjuste(dados.get("message", ""))
 
+    if adiamentos >= TETO_DE_ADIAMENTOS:
+        # O teto e o que impede o adiamento eterno. Sem ele, um Ollama fora do
+        # ar por dias mantem o trabalho girando na fila para sempre.
+        raise TrabalhoFalhou(f"{adiamentos} adiamentos por {dados.get('code')}")
+
     # Adiar NAO gasta tentativa: nada deu errado, so nao era a hora.
     raise Adiar(dados.get("message", ""), tentar_em_segundos=espera)
 
+if resposta.status_code in (400, 404, 422):
+    # Isto e "seu pedido esta errado". Repetir nao muda nada.
+    raise TrabalhoFalhou(resposta.text[:300])
+
 resposta.raise_for_status()
 ```
+
+Três detalhes que decidem se isso funciona sob carga:
+
+- **o teto de adiamentos não é opcional.** `Retry-After` chega a ser 5 s, e uma
+  geração longa de outro cliente produz dezenas de 503 seguidos. Sem teto, um
+  pedido que nunca vai caber gira para sempre;
+- **respeite o `Retry-After` como piso, não como valor final.** Um recuo
+  próprio por cima (`max(retry_after, 5 * 2 ** adiamentos)`, limitado) evita
+  bater na porta a cada 5 s durante uma geração de minutos;
+- **`ConnectionError` também é adiável.** Se o worker reiniciar no meio do seu
+  pedido, a conexão cai sem status HTTP nenhum. Conte no mesmo teto.
 
 Se o seu sistema não tem orquestrador, o mínimo aceitável é reagendar a tarefa
 para `agora + Retry-After` e sair — **nunca** um `sleep` segurando o processo:
@@ -142,6 +181,70 @@ Dois limites honestos: o modelo precisa existir no Ollama da máquina
 modelo diferente expulsa o que estava carregado. Não é falha, é tempo: o
 próximo pedido espera o carregamento.
 
+### A janela de contexto NÃO é por pedido
+
+Esta é a limitação que mais engana, porque ela responde **200**.
+
+O worker repassa o seu corpo ao `/v1/chat/completions` do Ollama, que é a
+camada compatível com a OpenAI. Ela desserializa o corpo num struct tipado, e
+**chave que ela não conhece some na desserialização** — sem erro, sem log, sem
+nada no corpo da resposta. `options` inteiro cai nessa, e com ele `num_ctx` e
+`num_predict`. Mandar `{"options": {"num_ctx": 16384}}` devolve 200 e não muda
+janela nenhuma.
+
+O que funciona é o que é campo do dialeto da OpenAI:
+
+| Você manda | Chega como | Funciona |
+|---|---|---|
+| `max_tokens` | `num_predict` | **sim** |
+| `temperature`, `top_p`, `seed`, `stop` | idem | **sim** |
+| `response_format` (inclusive `json_schema`) | `format` | **sim** |
+| `options.num_ctx` | — | **não**, descartado |
+| `options.num_predict` | — | **não**, descartado (use `max_tokens`) |
+| `keep_alive` | — | **não**, descartado |
+
+**Se você precisa de janela própria, embuta no modelo.** Um Modelfile por
+modelo (ou por janela) resolve sem nada especial daqui, e encaixa em quem já
+guarda o modelo por cliente:
+
+```
+FROM qwen2.5:7b-instruct
+PARAMETER num_ctx 16384
+```
+
+```bash
+ollama create crm-janela-16k -f Modelfile
+```
+
+E o `model` que você manda passa a ser `crm-janela-16k`. Os pesos são
+compartilhados no disco (o `FROM` não duplica gigabytes), mas com
+`OLLAMA_MAX_LOADED_MODELS=1` cada derivado é um modelo carregado distinto —
+então derive por *janela*, não por cliente, se muitos compartilham a mesma.
+
+A alternativa global é `OLLAMA_CONTEXT_LENGTH` no serviço do Ollama, que vale
+para a máquina inteira e para todos os clientes dela.
+
+### Como detectar truncamento
+
+Janela pequena demais não dá erro: ela **come o prompt pelo início**, e o
+primeiro a morrer é o prompt de sistema. A resposta volta 200, com JSON válido
+e schema respeitado, e o modelo não viu as suas instruções. É o defeito que
+passa por revisão automatizada e envenena tudo o que for construído em cima.
+
+Três sinais, do mais barato para o mais caro:
+
+| Sinal | Custo | O que prova |
+|---|---|---|
+| `usage.prompt_tokens` vs. o que você mandou | nada | truncou, se vier muito abaixo — e travado num número redondo (2048, 4096) é conclusivo |
+| `ollama.carregados_detalhe[].context_length` no `/health/` | uma viagem | com que janela o modelo **está** carregado |
+| um canário no início do prompt de sistema, ecoado na saída | um campo no schema | se o início do prompt sobreviveu, **neste pedido** |
+
+O primeiro é o que a maioria deveria usar: já está na resposta, não custa nada
+e não pede campo novo. O segundo é diagnóstico de **máquina** ("está
+configurada errada"), e não confirmação de pedido — ele é lido por outra
+viagem, depois, e entre a sua inferência e a sua leitura outro cliente pode ter
+recarregado o modelo com outra janela.
+
 ### Como saber o que está na placa
 
 Três formas, da mais barata para a mais cara:
@@ -151,6 +254,7 @@ Três formas, da mais barata para a mais cara:
 | um **200** seu | o seu modelo é o que está carregado agora | nada |
 | o **503** que você levou | `error.modelo` — o que está em uso | nada |
 | `GET /health/` | `modelo` (em uso) e `ollama.carregados` (residentes) | uma viagem |
+| `GET /health/` | `ollama.carregados_detalhe` — com **`context_length`** | a mesma viagem |
 
 A primeira é a que se esquece: depois de uma resposta bem-sucedida, você já
 sabe. Não precisa perguntar.
@@ -200,12 +304,20 @@ o `arbitro.py` diz explicitamente que hoje ele não faz nada disso.
 
 ## Timeouts do seu lado
 
-| Rota | Timeout sugerido |
-|---|---|
-| `/v1/chat/completions` | 600 s |
-| `/v1/images/generations` | 300 s |
-| `/parse/` | 600 s |
-| `/health/` | 10 s |
+| Rota | Timeout sugerido | Orçamento do worker |
+|---|---|---|
+| `/v1/chat/completions` | 600 s | `OLLAMA_TIMEOUT`, 540 s |
+| `/v1/images/generations` | 300 s | `IMAGEM_TEMPO_MAXIMO`, 600 s |
+| `/parse/` | 600 s | sem teto |
+| `/health/` | 10 s | — |
+
+**O seu timeout precisa ser MAIOR que o orçamento do worker, e não igual.** Os
+dois relógios não começam juntos: o seu parte quando você envia, o do worker só
+depois de o pedido chegar, passar pela credencial e tomar o lock. Iguais, quem
+desiste primeiro é você — e você abandona um trabalho que ainda está segurando
+a placa, de modo que a sua retentativa imediata bate num serviço ocupado. Com
+540 s do lado do worker e 600 s do seu, quem desiste primeiro é ele, e ele
+desiste devolvendo um 503 legível em vez de um socket cortado.
 
 São generosos de propósito: o worker pode estar carregando um modelo (dezenas
 de segundos) antes de começar. Um timeout curto desiste de um trabalho que
@@ -370,6 +482,22 @@ disponibilidade antes de cada pedido: entre o `/health/` e o pedido a placa
 pode ter sido tomada, e você teria feito duas viagens para chegar no mesmo
 503.
 
+Resposta: `contrato/saude-resposta.json`.
+
+**Ele nunca devolve 500.** Um bloco que falha ao ser coletado vira
+`{"erro": "<tipo>: <mensagem>"}` no lugar do bloco, com HTTP 200 — o processo
+está de pé, e é isso que o 200 afirma. Um diagnóstico que estoura não serve
+para descobrir o que estourou. Trate um bloco com `erro` como "esta parte está
+doente", e não como "o worker caiu".
+
+Dois campos valem alarme do seu lado:
+
+- **`ha_segundos` acima de ~120 com `ocupante: "texto"`** — trabalho preso. O
+  lock não tem watchdog: se a chamada ao Ollama pendurar, ele fica retido até
+  `OLLAMA_TIMEOUT` e todo mundo leva 503 nesse tempo;
+- **um bloco com `erro`** — a máquina está degradada de um jeito que os 200 não
+  denunciam.
+
 ## Mantendo o contrato honesto
 
 `contrato/*.json` são os exemplos de resposta. **Copie-os para os testes do
@@ -390,15 +518,43 @@ Compare de vez em quando — ou num teste, se o seu CI alcança o worker. Versã
 maior diferente significa que algo mudou de forma incompatível, e há uma seção
 nova neste arquivo explicando o quê.
 
+## O que mudou na 2.1
+
+Acréscimos e um ajuste de cabeçalho. Nada some e nada muda de tipo, mas dois
+pontos merecem olhada:
+
+- **`error.code == "timeout"` agora acontece em `/v1/chat/completions`.** Antes
+  era documentado e inalcançável: um pedido que estourava o orçamento chegava
+  como `ollama_indisponivel`, indistinguível de "o Ollama caiu". Se você já
+  trata o código, não precisa fazer nada — ele só passou a aparecer;
+- **o 503 de código `timeout` não traz mais `Retry-After`.** Se você lê o
+  cabeçalho com acesso direto (`headers["Retry-After"]`), troque por
+  `headers.get("Retry-After", 60)`. Afeta também `/v1/images/generations`, onde
+  esse código já ocorria;
+- **um 5xx vindo do Ollama agora sai envelopado** como `ollama_indisponivel`,
+  com `Retry-After`. Antes ele era repassado cru, sem `error.code` e sem
+  cabeçalho — a única forma de 503 que saía daqui sem nada para decidir;
+- **`/health/` ganhou `ollama.carregados_detalhe`** e passou a nunca responder
+  500. `ollama.carregados` continua sendo a lista de nomes, intocada;
+- **`OLLAMA_KEEP_ALIVE` foi removido do worker.** Ele era injetado no corpo e
+  descartado pela camada compatível do Ollama: parecia ativo e não tinha efeito
+  nenhum. A política de memória da máquina se ajusta no Ollama.
+
 ## Checklist
 
 - [ ] URL base aponta para o worker, não para o Ollama
 - [ ] `Authorization: Bearer` em toda chamada (menos `/health/`)
 - [ ] 503 **adia**, não falha, e não consome tentativa
-- [ ] `Retry-After` é respeitado
+- [ ] `Retry-After` é lido com `.get(..., 60)`, e tratado como piso
+- [ ] **Teto de adiamentos**, senão um pedido impossível gira para sempre
 - [ ] `error.code == "timeout"` não é repetido igual
+- [ ] `error.code` desconhecido **adia com teto**, nunca falha definitiva
+- [ ] 400/404/422 **falham**, não adiam
+- [ ] `ConnectionError` (restart do worker) entra no mesmo teto
 - [ ] Sem `stream: true`
-- [ ] Timeouts generosos
+- [ ] Timeout do cliente **maior** que `OLLAMA_TIMEOUT`, não igual
+- [ ] Janela de contexto embutida no modelo — `options.num_ctx` não funciona
+- [ ] Truncamento monitorado por `usage.prompt_tokens`
 - [ ] Exemplos de `contrato/` copiados para os seus testes
 - [ ] Reagendar, nunca `sleep`
 - [ ] Se usa modelo por cliente: afinidade é dica, e com limite de sequência

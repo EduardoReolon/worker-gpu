@@ -177,6 +177,22 @@ else
     journalctl --user -u worker-gpu.service -n 30 --no-pager 2>&1 | sed 's/^/    /' || true
 fi
 echo >&2
+
+# Quem esta na porta. O journal diz por que o worker nao subiu; isto diz se o
+# motivo e que o lugar ja estava ocupado — e a sonda de endereco la em cima nao
+# responde essa pergunta, porque ela faz `bind` na porta ZERO: confere o
+# endereco, nunca a porta. Numa reinstalacao a porta e legitimamente nossa, e
+# por isso a sonda pode continuar como esta; na FALHA, saber de quem ela e
+# separa "meu processo antigo nao morreu" de "outro servico chegou primeiro".
+echo "  Quem esta escutando na porta ${BIND_PORT}:" >&2
+if command -v ss >/dev/null 2>&1; then
+    ss -ltnp 2>/dev/null | grep ":${BIND_PORT}\b" | sed 's/^/    /' >&2 || echo "    (ninguem)" >&2
+elif command -v lsof >/dev/null 2>&1; then
+    lsof -iTCP:"${BIND_PORT}" -sTCP:LISTEN -P -n 2>/dev/null | sed 's/^/    /' >&2 || echo "    (ninguem)" >&2
+else
+    echo "    (nem ss nem lsof nesta maquina)" >&2
+fi
+echo >&2
 echo "  A unit ficou habilitada e o systemd vai reinicia-la a cada 10s." >&2
 echo "  Para parar enquanto investiga:" >&2
 echo "    ${SYSTEMCTL[*]} disable --now worker-gpu.service" >&2

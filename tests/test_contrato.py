@@ -78,6 +78,7 @@ def cliente(worker, monkeypatch):
     )
     monkeypatch.setattr(conversao, "obter_conversor", lambda: _Conversor())
     monkeypatch.setattr(ollama, "modelos_carregados", list)
+    monkeypatch.setattr(ollama, "modelos_carregados_detalhe", list)
     monkeypatch.setattr(ollama, "esta_de_pe", lambda: True)
     return TestClient(worker.app)
 
@@ -228,3 +229,82 @@ def test_a_versao_do_contrato_aparece_no_health(cliente):
     }
 
     assert nos_exemplos == {publicada}
+
+
+def test_a_resposta_do_health_tem_a_forma_publicada(worker, monkeypatch):
+    """O `/health/` e o endpoint que todo cliente consulta para diagnosticar,
+    e era o unico sem exemplo em `contrato/`.
+
+    A consequencia apareceu em uso: quando as tres rotas viraram um servico
+    so, o estado passou a vir aninhado e `busy` virou `ocupada` na raiz. Um
+    cliente continuou lendo as chaves antigas, `dict.get` devolveu `None`, e
+    os avisos que justificavam o diagnostico dele sumiram — sem erro nenhum,
+    por semanas.
+
+    Com o exemplo publicado, uma mudanca de forma quebra AQUI, na suite do
+    worker, em vez de quebrar um cliente em producao. Em especial: trocar
+    `ollama.carregados` de lista de nomes para lista de objetos passa a ser
+    uma falha visivel, e nao uma surpresa no outro repositorio.
+    """
+    import ollama
+
+    monkeypatch.setattr(
+        ollama,
+        "modelos_carregados_detalhe",
+        lambda: [{"name": "qwen2.5:7b-instruct", "context_length": 4096}],
+    )
+    monkeypatch.setattr(ollama, "esta_de_pe", lambda: True)
+
+    resposta = TestClient(worker.app).get("/health/")
+
+    assert resposta.status_code == 200
+    assert _forma(_exemplo("saude-resposta.json")) <= _forma(resposta.json())
+
+
+def test_o_health_nunca_responde_500(worker, monkeypatch):
+    """A promessa que o exemplo de `saude-resposta.json` faz por escrito.
+
+    Vale para todos os blocos ao mesmo tempo: e o cenario de maquina doente,
+    que e exatamente quando alguem abre o `/health/`.
+    """
+    import conversao
+    import imagem
+    import ollama
+
+    def explodir(*a, **k):
+        raise RuntimeError("a maquina esta ruim")
+
+    monkeypatch.setattr(ollama, "modelos_carregados_detalhe", explodir)
+    monkeypatch.setattr(imagem, "estado", explodir)
+    monkeypatch.setattr(conversao, "estado", explodir)
+
+    resposta = TestClient(worker.app).get("/health/")
+
+    assert resposta.status_code == 200
+    corpo = resposta.json()
+    assert corpo["status"] == "ok"
+    assert all("erro" in corpo[bloco] for bloco in ("ollama", "imagem", "conversao"))
+
+
+def test_o_timeout_e_o_unico_503_sem_retry_after(worker, cabecalhos, monkeypatch):
+    """A regra que `ocupada-resposta.json` publica: todo 503 tem
+    `error.code`, e todos trazem `Retry-After` menos o `timeout`."""
+    import ollama
+
+    def estourar(*a, **k):
+        raise ollama.OllamaDemorouDemais("passou do orcamento")
+
+    monkeypatch.setattr(ollama, "conversar", estourar)
+    corpo = {"messages": [{"role": "user", "content": "oi"}]}
+    cliente_http = TestClient(worker.app)
+
+    demorou = cliente_http.post("/v1/chat/completions", json=corpo, headers=cabecalhos)
+    assert demorou.json()["error"]["code"] == "timeout"
+    assert "Retry-After" not in demorou.headers
+
+    monkeypatch.setattr(
+        ollama, "conversar", lambda c, cab: (_ for _ in ()).throw(ollama.OllamaIndisponivel("fora"))
+    )
+    caiu = cliente_http.post("/v1/chat/completions", json=corpo, headers=cabecalhos)
+    assert caiu.json()["error"]["code"] == "ollama_indisponivel"
+    assert "Retry-After" in caiu.headers

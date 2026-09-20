@@ -1,7 +1,9 @@
 {
-  "_contrato_versao": "2.0",
+  "_contrato_versao": "2.1",
   "_rota": "qualquer, com HTTP 503 e cabecalho Retry-After",
   "_nota": "error.code e o campo que o cliente le para decidir. Os codigos possiveis sao: gpu_ocupada, ollama_indisponivel, sem_vram, timeout. `modelo` so aparece quando se sabe qual esta em uso; ausente nao quer dizer nenhum.",
+  "_nota_retry_after": "TODO 503 que sai do worker tem `error.code`. O cabecalho `Retry-After` acompanha todos MENOS o `timeout`, onde ele foi omitido de proposito: para esse codigo a orientacao e reduzir o pedido, e nao voltar igual mais tarde.",
+  "_nota_codigo_desconhecido": "Um `error.code` que o cliente nao conhece deve ser tratado como ADIAVEL, com teto de tentativas — nunca como falha definitiva. Sem essa regra a lista de codigos nunca mais poderia crescer, porque qualquer codigo novo quebraria todo cliente existente.",
   "error": {
     "code": "gpu_ocupada",
     "message": "a GPU esta em uso por 'texto'; tente em 18s",
