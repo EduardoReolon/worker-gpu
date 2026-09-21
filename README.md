@@ -205,6 +205,66 @@ isso que o árbitro, e não uma imagem menor, é a resposta para dividir a placa
 
 Em CPU, o mesmo 512×288 levou 160 s: 11 vezes mais, com qualidade pior.
 
+## Qualidade da imagem
+
+As imagens saindo "com cara de IA" quase nunca é só o modelo. Quatro coisas
+desta configuração degradam o resultado antes de o modelo entrar na conta, e as
+quatro são silenciosas — a imagem sai, com 200, só pior.
+
+| O quê | Por quê | Conserto |
+|---|---|---|
+| **prompt em português** | os codificadores de texto do SDXL (CLIP ViT-L, OpenCLIP ViT-bigG) foram treinados em legendas da web, esmagadoramente inglesas. `borrado` não está no vocabulário; `blurry` está | mande o prompt em inglês. O worker **avisa no journal** quando detecta português |
+| **VAE em float16** | o VAE que vem no SDXL estoura em float16 — e é em float16 que o serviço carrega, porque float32 não cabe. Dá manchas, faixas de cor e às vezes imagem preta | `IMAGEM_VAE=madebyollin/sdxl-vae-fp16-fix`. O worker avisa quando vê um VAE de SDXL sem ajuste |
+| **tamanho fora da área de treino** | o SDXL foi treinado em ~1024×1024 pixels de **área**, em proporções fixas. A de 16:9 que ele conhece é **1344×768**, não 1024×576 | peça 1344×768. O `IMAGEM_LADO_MAXIMO` subiu para 1344 para isso ser possível |
+| **amostrador padrão** | o Euler do diffusers precisa de mais passos para o mesmo resultado | `IMAGEM_SCHEDULER=dpm++2m_karras` |
+
+O prompt negativo deste serviço esteve em português por muito tempo, e por isso
+não fazia nada. Era o pior tipo de configuração: aparecia no `.env`, parecia
+ativa, e o efeito era o de não existir.
+
+### O modelo
+
+O SDXL base é o padrão porque é o que existe sem escolha, não porque é bom para
+foto realista — ele é de 2023 e é um dos piores da família nisso. Um **ajuste
+fino da mesma família** troca sem mexer em código, sem mudar a VRAM e sem mudar
+o pipeline:
+
+```bash
+IMAGEM_VAE=madebyollin/sdxl-vae-fp16-fix
+IMAGEM_MODELO=SG161222/RealVisXL_V5.0        # ou RunDiffusion/Juggernaut-XL-v9
+```
+
+Depois, `./venv/bin/python baixar_modelo.py` e reiniciar.
+
+Outras famílias cabem em 8 GB e exigem mais: **SD 3.5 Medium** segue melhor o
+prompt e escreve texto legível, mas precisa de outro pipeline; **FLUX.1-schnell**
+é o melhor em realismo e são 12B parâmetros — só entra quantizado, e devagar.
+Não meça por reputação: meça na bancada.
+
+### A bancada
+
+```bash
+systemctl --user stop worker-gpu
+
+./venv/bin/python bancada.py --modelos stabilityai/stable-diffusion-xl-base-1.0,SG161222/RealVisXL_V5.0
+./venv/bin/python bancada.py --vaes ',madebyollin/sdxl-vae-fp16-fix'
+./venv/bin/python bancada.py --schedulers euler,dpm++2m_karras --passos 25,40
+
+systemctl --user start worker-gpu
+```
+
+Ela gera as variantes com **prompt e semente fixos** e escreve uma página com
+as imagens lado a lado, agrupadas por cena. Duas sementes por variante, no
+mínimo: a variação entre sementes do mesmo modelo é frequentemente maior que a
+variação entre modelos, e quem olha uma imagem de cada escolhe a sorte.
+
+Ela existe para tirar o PubliBot do caminho — ajustar qualidade pela tela de
+revisão dele passa por LLM, fila, worker e navegador, e quando a imagem sai
+ruim não dá para saber de quem foi a culpa.
+
+Olhe nesta ordem, que é a ordem em que a geração realista quebra: **mãos e
+dedos**, **pele**, **reflexo e metal**, **texto na cena**, **fundo desfocado**.
+
 ## Diagnóstico
 
 ```bash
@@ -227,6 +287,8 @@ journalctl --user -u worker-gpu -f
 | `503 baixando_modelo` | o modelo de texto pedido nao estava no disco. Acompanhe em `ollama.baixando` no `/health/` |
 | `404` num modelo que deveria existir | o download falhou; a mensagem diz por que. Confira o nome contra `ollama list` |
 | `ultimo_dispositivo: cpu` | caiu para CPU. Com `IMAGEM_PERMITIR_CPU=nao` isso não deveria acontecer |
+| imagens com manchas ou faixas de cor | `IMAGEM_VAE` vazio num modelo SDXL. Veja **Qualidade da imagem** |
+| imagens genéricas, mal compostas | prompt em português. Procure o aviso: `journalctl --user -u worker-gpu \| grep portugues` |
 | uvicorn morre no boot | `BIND_HOST` inexistente, ou `BIND_PORT` vazio |
 
 ## Testes

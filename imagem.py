@@ -51,7 +51,9 @@ from config import (
     IMAGEM_OCIOSO_SEGUNDOS,
     IMAGEM_PASSOS,
     IMAGEM_PERMITIR_CPU,
+    IMAGEM_SCHEDULER,
     IMAGEM_TEMPO_MAXIMO,
+    IMAGEM_VAE,
     OLLAMA_DESCARREGAR_PARA_IMAGEM,
 )
 from seguranca import conferir
@@ -73,11 +75,48 @@ _trava = threading.Lock()
 _temporizador: threading.Timer | None = None
 
 
+# Amostradores disponiveis, por nome curto. O amostrador decide como os passos
+# caminham do ruido para a imagem, e com pouco passo a escolha aparece.
+#
+# Publicado (e nao privado) porque a `bancada.py` compara amostradores usando
+# ESTE mapa: uma bancada com a sua propria lista mediria uma configuracao que o
+# servico nao usa, que e o jeito mais facil de escolher errado.
+SCHEDULERS = {
+    "dpm++2m_karras": ("DPMSolverMultistepScheduler", {"use_karras_sigmas": True}),
+    "dpm++2m": ("DPMSolverMultistepScheduler", {}),
+    "euler": ("EulerDiscreteScheduler", {}),
+    "euler_a": ("EulerAncestralDiscreteScheduler", {}),
+    "unipc": ("UniPCMultistepScheduler", {}),
+    "ddim": ("DDIMScheduler", {}),
+}
+
+# Palavras que so aparecem em texto portugues, para o aviso de prompt.
+#
+# Nao e deteccao de idioma: e uma peneira grosseira de proposito, e errar para
+# "nao avisa" e o certo. Um aviso a mais num prompt em ingles seria ruido no
+# journal; o aviso que falta e so um aviso que falta.
+_PISTAS_DE_PORTUGUES = (
+    " de ",
+    " da ",
+    " do ",
+    " com ",
+    " uma ",
+    " um ",
+    " que ",
+    " para ",
+    " sem ",
+    "cao ",
+    "ção",
+)
+
+
 class PedidoDeImagem(BaseModel):
     prompt: str
     model: str = ""
     n: int = 1
-    size: str = "1024x576"
+    # 1344x768 e nao 1024x576: e a proporcao 16:9 que o SDXL conhece do
+    # treino. Veja `IMAGEM_LADO_MAXIMO` no `config.py`.
+    size: str = "1344x768"
     # Aceito e ignorado: este servico so devolve base64. Um link temporario
     # expiraria antes da publicacao e viraria imagem quebrada no site.
     response_format: str = "b64_json"
@@ -138,9 +177,88 @@ def modelo_esta_no_disco() -> bool:
     return True
 
 
-def _montar_pipeline(dispositivo: str):
+def aplicar_scheduler(pipe, nome: str):
+    """Troca o amostrador do pipeline. `nome` vazio mantem o do modelo.
+
+    `from_config` e nao um construtor novo: o amostrador precisa herdar a
+    configuracao de ruido DO MODELO (betas, passos de treino). Construido do
+    zero com os padroes da classe, ele gera — e gera errado, sem erro nenhum.
+    """
+    if not nome:
+        return pipe
+
+    if nome not in SCHEDULERS:
+        raise RuntimeError(
+            f"IMAGEM_SCHEDULER={nome!r} nao existe. Use um de: {', '.join(sorted(SCHEDULERS))}"
+        )
+
+    import diffusers
+
+    classe, extras = SCHEDULERS[nome]
+    pipe.scheduler = getattr(diffusers, classe).from_config(pipe.scheduler.config, **extras)
+    logger.info("Amostrador: %s (%s)", nome, classe)
+
+    return pipe
+
+
+# O `scaling_factor` do VAE do SDXL. E ele que identifica a familia, e nao o
+# nome do repositorio: `RealVisXL`, `Juggernaut-XL` e `animagine-xl` sao todos
+# SDXL e nao tem substring em comum que de para procurar sem errar.
+_ESCALA_DO_VAE_DO_SDXL = 0.13025
+
+
+def _avisar_do_vae(pipe, vae: str, meia: bool) -> None:
+    """O VAE do SDXL estoura em float16, e o defeito e visivel.
+
+    Manchas, faixas de cor e, as vezes, imagem preta — o tipo de defeito que
+    quem olha chama de "cara de IA" sem saber apontar o que e.
+
+    A familia e descoberta no OBJETO CARREGADO, e nao no nome do modelo. Pelo
+    nome nao da: `RealVisXL_V5.0` e SDXL e nao contem "sdxl"; procurar "xl"
+    solto acertaria ele e erraria em qualquer repositorio com "xl" no meio de
+    outra palavra. O `scaling_factor` do VAE, ao contrario, e um fato do modelo
+    — e os VAE de 16 canais (SD 3.5, FLUX) nao tem esse problema e nao caem
+    aqui.
+
+    O worker nao corrige sozinho: trocar o VAE por conta propria mudaria a
+    saida de quem nao pediu. Mas ficar calado seria deixar a imagem sair pior
+    sem nada denunciando, que e o unico defeito que este servico nao aceita.
+    """
+    if vae or not meia:
+        return
+
+    try:
+        config = pipe.vae.config
+        canais = int(config.latent_channels)
+        escala = float(config.scaling_factor)
+    except Exception:
+        return
+
+    if canais != 4 or abs(escala - _ESCALA_DO_VAE_DO_SDXL) > 1e-4:
+        return
+
+    logger.warning(
+        "Este modelo usa o VAE do SDXL (scaling_factor=%s) em float16, e "
+        "IMAGEM_VAE esta vazio. Esse VAE estoura em float16 e produz manchas e "
+        "faixas de cor. Ponha IMAGEM_VAE=madebyollin/sdxl-vae-fp16-fix no .env "
+        "e reinicie.",
+        escala,
+    )
+
+
+def _montar_pipeline(dispositivo: str, modelo: str = "", vae: str = "", scheduler: str = ""):
+    """O pipeline como o SERVICO o monta.
+
+    Os parametros existem para a `bancada.py` comparar variantes por aqui, e
+    nao por um caminho proprio: uma bancada que monta o pipeline de outro jeito
+    mede uma configuracao que o servico nao usa.
+    """
     import torch
     from diffusers import AutoPipelineForText2Image
+
+    modelo = modelo or IMAGEM_MODELO
+    vae = vae if vae != "" else IMAGEM_VAE
+    scheduler = scheduler if scheduler != "" else IMAGEM_SCHEDULER
 
     meia = dispositivo == "cuda"
     argumentos = {
@@ -150,19 +268,31 @@ def _montar_pipeline(dispositivo: str):
     if meia:
         argumentos["variant"] = "fp16"
 
-    logger.info("Carregando %s em %s...", IMAGEM_MODELO, dispositivo)
+    if vae:
+        from diffusers import AutoencoderKL
+
+        logger.info("VAE alternativo: %s", vae)
+        argumentos["vae"] = AutoencoderKL.from_pretrained(
+            vae, torch_dtype=torch.float16 if meia else torch.float32
+        )
+
+    logger.info("Carregando %s em %s...", modelo, dispositivo)
     inicio = time.perf_counter()
     try:
-        pipe = AutoPipelineForText2Image.from_pretrained(IMAGEM_MODELO, **argumentos)
+        pipe = AutoPipelineForText2Image.from_pretrained(modelo, **argumentos)
     except Exception:
         if not meia:
             raise
         # Nem todo repositorio publica a variante fp16. Sem esta segunda
         # tentativa, trocar de modelo no `.env` falharia com um erro sobre
         # arquivo ausente que nao menciona `variant`.
-        logger.warning("%s nao tem variante fp16; carregando os pesos completos.", IMAGEM_MODELO)
+        logger.warning("%s nao tem variante fp16; carregando os pesos completos.", modelo)
         argumentos.pop("variant")
-        pipe = AutoPipelineForText2Image.from_pretrained(IMAGEM_MODELO, **argumentos)
+        pipe = AutoPipelineForText2Image.from_pretrained(modelo, **argumentos)
+
+    aplicar_scheduler(pipe, scheduler)
+    # Depois de carregar, porque a familia do VAE se descobre no objeto.
+    _avisar_do_vae(pipe, vae, meia)
 
     if dispositivo == "cuda":
         # `enable_model_cpu_offload`, e NAO `.to("cuda")`. Os pesos ficam na
@@ -272,6 +402,8 @@ def gerar(pedido: PedidoDeImagem):
     if not pedido.prompt.strip():
         raise HTTPException(422, "prompt vazio.")
 
+    _avisar_de_prompt_em_portugues(pedido.prompt)
+
     quantas = max(1, min(pedido.n, IMAGEM_MAXIMO))
     largura, altura = _medidas(pedido.size)
 
@@ -334,6 +466,33 @@ def gerar(pedido: PedidoDeImagem):
             for png in imagens
         ],
     }
+
+
+def _avisar_de_prompt_em_portugues(prompt: str) -> None:
+    """Prompt em portugues e o defeito de qualidade mais caro desta rota.
+
+    Os codificadores de texto do SDXL (CLIP ViT-L e OpenCLIP ViT-bigG) foram
+    treinados em legendas da web, esmagadoramente em ingles. Um prompt em
+    portugues nao da erro: ele gera uma imagem a partir do pouco que sobrou de
+    sinal, e o resultado e generico, mal composto, com aquela "cara de IA" que
+    ninguem sabe apontar de onde vem.
+
+    O worker NAO traduz: traduzir em silencio mudaria o pedido de quem chamou,
+    e um prompt trocado sem aviso e pior que um prompt ruim. Ele avisa, e quem
+    integra decide — foi este aviso que revelou que o prompt NEGATIVO deste
+    servico estava em portugues desde o inicio, sem efeito nenhum.
+    """
+    baixo = f" {prompt.lower()} "
+    pistas = [pista.strip() for pista in _PISTAS_DE_PORTUGUES if pista in baixo]
+
+    if len(pistas) >= 2:
+        logger.warning(
+            "O prompt parece estar em portugues (%s). Os codificadores de texto "
+            "do SDXL foram treinados em ingles: isto nao da erro, mas gera uma "
+            "imagem pior. Mande o prompt em ingles. Prompt: %.120s",
+            ", ".join(pistas[:4]),
+            prompt,
+        )
 
 
 def gerar_imagens(
@@ -422,6 +581,13 @@ def estado() -> dict:
         "baixado": modelo_esta_no_disco(),
         "carregado": _pipeline is not None,
         "passos": IMAGEM_PASSOS,
+        "guidance": IMAGEM_GUIDANCE,
+        # Os tres que decidem qualidade e nao aparecem em lugar nenhum senao
+        # aqui. `vae` vazio num modelo SDXL e o defeito silencioso que o log
+        # avisa na carga; publicado, da para conferir de fora, sem journal.
+        "vae": IMAGEM_VAE or "(o do modelo)",
+        "amostrador": IMAGEM_SCHEDULER or "(o do modelo)",
+        "lado_maximo": IMAGEM_LADO_MAXIMO,
         "permite_cpu": IMAGEM_PERMITIR_CPU,
         "tempo_maximo": IMAGEM_TEMPO_MAXIMO,
     }

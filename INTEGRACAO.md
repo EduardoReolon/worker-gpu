@@ -458,6 +458,19 @@ sem avisar.
 O tamanho quase não muda o tempo (veja o README): o custo é dominado por mover
 pesos entre RAM e VRAM. Peça o tamanho que você quer publicar.
 
+**Peça 1344×768 para 16:9, e não 1024×576.** O SDXL foi treinado em cerca de
+1024×1024 pixels de **área**, distribuídos em proporções fixas, e a de 16:9 que
+ele conhece é 1344×768. Pedir abaixo da área de treino gera anatomia e
+composição piores — e como o tamanho quase não muda o tempo, pedir menos não
+economiza nada. O teto por lado é 1344 (`imagem.lado_maximo` no `/health/`).
+
+**O prompt precisa estar em inglês.** Os codificadores de texto do SDXL foram
+treinados em legendas da web, esmagadoramente inglesas: um prompt em português
+não dá erro, gera uma imagem a partir do pouco sinal que sobrou, e o resultado
+é genérico e mal composto. O worker **não traduz** — traduzir em silêncio
+mudaria o seu pedido —, mas registra um aviso no journal quando detecta
+português. Se você gera o prompt com um LLM, peça a ele em inglês.
+
 ### Conversão de PDF (Docling)
 
 ```http
@@ -625,6 +638,19 @@ pontos merecem olhada:
   cabeçalho — a única forma de 503 que saía daqui sem nada para decidir;
 - **`/health/` ganhou `ollama.carregados_detalhe`** e passou a nunca responder
   500. `ollama.carregados` continua sendo a lista de nomes, intocada;
+## O que mudou na 2.3
+
+Só a rota de imagem, e é sobre qualidade:
+
+- **o tamanho padrão passou de `1024x576` para `1344x768`**, que é a proporção
+  16:9 que o SDXL conhece do treino. Afeta você só se você **omite** `size`;
+- **o teto por lado subiu de 1024 para 1344**, para a proporção acima ser
+  pedível. Nada que passava antes deixou de passar;
+- **o prompt negativo do worker estava em português e não fazia nada.** Agora
+  está em inglês. Veja o aviso sobre o **seu** prompt na seção de imagem;
+- `/health/` publica `imagem.vae`, `imagem.amostrador`, `imagem.guidance` e
+  `imagem.lado_maximo`, que são os ajustes que decidem qualidade.
+
 ## O que mudou na 2.2
 
 - **modelo ausente passou a ser baixado sozinho**, em segundo plano e sem

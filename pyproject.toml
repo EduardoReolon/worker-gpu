@@ -34,3 +34,6 @@ ignore = [
 "medir.py" = ["T20"]
 "medir_imagem.py" = ["T20"]
 "baixar_modelo.py" = ["T20"]
+# A bancada usa `imagem._montar_pipeline` de proposito: uma montagem propria
+# mediria uma configuracao que o servico nao usa.
+"bancada.py" = ["T20", "SLF001"]

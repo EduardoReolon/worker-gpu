@@ -14,6 +14,11 @@ __pycache__/
 # sobre outra.
 medicoes/
 
+# Saida da bancada de comparacao: dezenas de PNG por rodada, e a conclusao que
+# importa nao e a imagem — e a linha que voce escreve no `.env` depois de
+# olhar.
+bancada/
+
 # Cache de modelo, quando alguem aponta o HF_HOME para ca.
 .model_cache/
 

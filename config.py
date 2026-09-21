@@ -118,16 +118,64 @@ OLLAMA_DESCARREGAR_PARA_IMAGEM = _booleano("OLLAMA_DESCARREGAR_PARA_IMAGEM", Tru
 IMAGEM_ATIVA = _booleano("IMAGEM_ATIVA", True)
 IMAGEM_MODELO = os.environ.get("IMAGEM_MODELO", "stabilityai/stable-diffusion-xl-base-1.0")
 IMAGEM_DEVICE = os.environ.get("IMAGEM_DEVICE", "auto").lower()
-IMAGEM_PASSOS = _inteiro("IMAGEM_PASSOS", 25)
-IMAGEM_GUIDANCE = _decimal("IMAGEM_GUIDANCE", 7.0)
+IMAGEM_PASSOS = _inteiro("IMAGEM_PASSOS", 30)
+IMAGEM_GUIDANCE = _decimal("IMAGEM_GUIDANCE", 6.0)
+
+# O prompt negativo, em INGLES — e a lingua e o ponto, nao um descuido.
+#
+# Ele esteve em portugues aqui por muito tempo ("texto, letras, marca d'agua,
+# baixa qualidade, borrado, deformado") e nao fazia praticamente nada. Os
+# codificadores de texto do SDXL sao o CLIP ViT-L e o OpenCLIP ViT-bigG,
+# treinados em legendas de imagem da web, que sao esmagadoramente em ingles.
+# "borrado" nao esta no vocabulario aprendido; "blurry" esta.
+#
+# Era o pior tipo de configuracao: aparecia no `.env`, parecia ativa, e o
+# resultado era o de nao ter prompt negativo nenhum. O MESMO vale para o
+# prompt POSITIVO, que vem do cliente — veja o aviso em `imagem.py`.
 IMAGEM_NEGATIVO = os.environ.get(
     "IMAGEM_NEGATIVO",
-    "texto, letras, palavras, marca d'agua, logotipo, assinatura, moldura, "
-    "baixa qualidade, borrado, deformado",
+    "text, letters, words, watermark, logo, signature, frame, border, "
+    "low quality, blurry, out of focus, jpeg artifacts, deformed, disfigured, "
+    "extra fingers, mutated hands, bad anatomy, plastic skin, oversaturated, "
+    "cartoon, illustration, 3d render, cgi",
 )
+
+# VAE alternativo, por nome de repositorio no HuggingFace. Vazio = o do modelo.
+#
+# Existe por um defeito conhecido e visivel: o VAE que vem no SDXL 1.0
+# **estoura em float16**. O servico carrega em float16 na placa (e precisa:
+# float32 nao cabe), e o resultado sao manchas, faixas de cor e, em alguns
+# casos, imagem preta — defeitos que a pessoa olhando chama de "cara de IA"
+# sem saber apontar o que e.
+#
+# Para qualquer modelo da familia SDXL, o conserto e este:
+#
+#     IMAGEM_VAE=madebyollin/sdxl-vae-fp16-fix
+#
+# NAO e o padrao aqui porque `IMAGEM_MODELO` pode ser de outra familia (SD 1.5,
+# SD 3.5, FLUX), e um VAE de SDXL nelas nao encaixa. O worker AVISA no log
+# quando ve um modelo SDXL sem VAE ajustado.
+IMAGEM_VAE = os.environ.get("IMAGEM_VAE", "")
+
+# Amostrador. Vazio = o que vem no modelo (para o SDXL, o Euler do diffusers).
+#
+# O amostrador decide como os passos caminham do ruido para a imagem, e com
+# pouco passo a escolha aparece: `dpm++2m_karras` costuma dar em 30 passos o
+# que o Euler da em 50. Nomes aceitos em `imagem.SCHEDULERS`.
+IMAGEM_SCHEDULER = os.environ.get("IMAGEM_SCHEDULER", "").strip().lower()
 IMAGEM_OCIOSO_SEGUNDOS = _inteiro("IMAGEM_OCIOSO_SEGUNDOS", 300)
 IMAGEM_MAXIMO = _inteiro("IMAGEM_MAXIMO", 4)
-IMAGEM_LADO_MAXIMO = _inteiro("IMAGEM_LADO_MAXIMO", 1024)
+# Lado maximo aceito num pedido.
+#
+# 1344 e nao 1024, e a diferenca importa para a qualidade: o SDXL foi treinado
+# em recortes de cerca de 1024x1024 PIXELS DE AREA, distribuidos em proporcoes
+# fixas — e a de 16:9 que ele conhece e 1344x768, nao 1024x576. Pedir 1024x576
+# gera abaixo da area de treino, e o modelo responde com anatomia e composicao
+# piores. Com o teto em 1024 nao era possivel nem pedir a proporcao certa.
+#
+# Custa VRAM: mais area, mais ativacao na placa. Meca antes de subir mais:
+#     ./venv/bin/python bancada.py --tamanhos 1024x576,1344x768
+IMAGEM_LADO_MAXIMO = _inteiro("IMAGEM_LADO_MAXIMO", 1344)
 
 # Gerar em CPU quando a VRAM nao couber. Desligado: medido em uso, um lote em
 # CPU consumiu horas de processador e 17 GB de RAM (float32), com a maquina
