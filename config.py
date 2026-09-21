@@ -167,15 +167,29 @@ IMAGEM_OCIOSO_SEGUNDOS = _inteiro("IMAGEM_OCIOSO_SEGUNDOS", 300)
 IMAGEM_MAXIMO = _inteiro("IMAGEM_MAXIMO", 4)
 # Lado maximo aceito num pedido.
 #
-# 1344 e nao 1024, e a diferenca importa para a qualidade: o SDXL foi treinado
-# em recortes de cerca de 1024x1024 PIXELS DE AREA, distribuidos em proporcoes
-# fixas — e a de 16:9 que ele conhece e 1344x768, nao 1024x576. Pedir 1024x576
-# gera abaixo da area de treino, e o modelo responde com anatomia e composicao
-# piores. Com o teto em 1024 nao era possivel nem pedir a proporcao certa.
+# 1536 e nao 1024, e a diferenca importa para a qualidade: o SDXL foi treinado
+# em recortes de cerca de 1024x1024 PIXELS DE AREA, distribuidos numa grade de
+# proporcoes fixas (veja `imagem.GRADE_DO_SDXL`). A mais larga delas e
+# 1536x640, e com o teto em 1024 nao havia como nem pedir as largas — o pedido
+# voltava 422. Gerar fora da grade nao da erro: da assunto duplicado,
+# geometria torta e composicao incoerente.
 #
-# Custa VRAM: mais area, mais ativacao na placa. Meca antes de subir mais:
-#     ./venv/bin/python bancada.py --tamanhos 1024x576,1344x768
-IMAGEM_LADO_MAXIMO = _inteiro("IMAGEM_LADO_MAXIMO", 1344)
+# Este teto e por LADO. Quem limita o custo e o `IMAGEM_AREA_MAXIMA_MP`
+# abaixo, e os dois precisam existir: sozinho, um teto de lado em 1536
+# deixaria passar 1536x1536, que e o dobro da area de treino.
+IMAGEM_LADO_MAXIMO = _inteiro("IMAGEM_LADO_MAXIMO", 1536)
+
+# Area maxima de UMA imagem, em megapixels.
+#
+# E o teto que protege a placa e a qualidade ao mesmo tempo, e ele existe
+# porque o teto por lado nao protege nenhuma das duas: toda a grade de treino
+# do SDXL fica em torno de 1,05 MP, e 1536x1536 passaria pelo teto de lado com
+# 2,36 MP — o dobro da area de treino e VRAM que esta placa nao tem.
+#
+# 1,2 deixa a grade inteira passar com folga e barra o que esta claramente
+# fora. Suba so depois de medir:
+#     ./venv/bin/python bancada.py --tamanhos 1344x768,1536x640
+IMAGEM_AREA_MAXIMA_MP = _decimal("IMAGEM_AREA_MAXIMA_MP", 1.2)
 
 # Gerar em CPU quando a VRAM nao couber. Desligado: medido em uso, um lote em
 # CPU consumiu horas de processador e 17 GB de RAM (float32), com a maquina

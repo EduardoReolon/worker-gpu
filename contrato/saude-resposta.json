@@ -1,12 +1,12 @@
 {
-  "_contrato_versao": "2.3",
+  "_contrato_versao": "2.4",
   "_rota": "GET /health/ (sem credencial, de proposito)",
   "_nota": "Este endpoint NUNCA devolve 500. Um bloco que falha ao ser coletado vira {\"erro\": \"<tipo>: <mensagem>\"} no lugar do bloco, com HTTP 200 — o processo esta de pe, e e isso que o 200 afirma. Os blocos `imagem` e `conversao` so aparecem quando a rota correspondente esta ligada (veja `rotas`).",
   "_nota_baixando": "Downloads de modelo em curso, normalmente lista vazia. Um download NAO aparece em `ocupada` porque nao usa a placa: ele e rede e disco, e a imagem e a conversao seguem funcionando enquanto ele acontece. Enquanto um modelo esta aqui, os pedidos dele levam 503 `baixando_modelo`.",
   "_nota_carregados": "`carregados` e a lista de NOMES e continua sendo `list[str]`. `carregados_detalhe` e o registro do `/api/ps` do Ollama repassado; o worker garante que cada item tem `name`, e o RESTO das chaves e do Ollama e varia com a versao dele. `context_length` e a janela com que o modelo foi carregado — e uma dica de MAQUINA, nao confirmacao de que um pedido especifico rodou com ela.",
   "status": "ok",
   "service": "worker-gpu",
-  "contrato_versao": "2.3",
+  "contrato_versao": "2.4",
   "ocupada": false,
   "ocupante": null,
   "modelo": null,
@@ -33,6 +33,7 @@
       }
     ]
   },
+  "_nota_grade": "`grade` sao as proporcoes em que o SDXL foi treinado, todas em torno de 1,05 MP. A lista real tem ~40 entradas; o exemplo mostra tres. Validar contra ELA, e nao contra uma copia no cliente. Tamanho fora da grade NAO e recusado (1200x632 passa), so avisado no journal — mas cada lado precisa ser multiplo de 8, entao o 1200x630 do `og:image` volta 422.",
   "_nota_imagem": "`vae` e `amostrador` trazem \"(o do modelo)\" quando nao foram ajustados. Para um modelo da familia SDXL, `vae: \"(o do modelo)\"` e um defeito silencioso: o VAE do SDXL estoura em float16 e produz manchas e faixas de cor. O worker avisa no journal quando detecta isso.",
   "imagem": {
     "modelo": "stabilityai/stable-diffusion-xl-base-1.0",
@@ -44,7 +45,9 @@
     "guidance": 6.0,
     "vae": "madebyollin/sdxl-vae-fp16-fix",
     "amostrador": "dpm++2m_karras",
-    "lado_maximo": 1344,
+    "lado_maximo": 1536,
+    "area_maxima_mp": 1.2,
+    "grade": ["1024x1024", "1344x768", "1536x640"],
     "permite_cpu": false,
     "tempo_maximo": 600
   },

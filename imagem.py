@@ -42,6 +42,7 @@ import ollama
 import respostas
 from arbitro import ARBITRO, GpuOcupada
 from config import (
+    IMAGEM_AREA_MAXIMA_MP,
     IMAGEM_DEVICE,
     IMAGEM_GUIDANCE,
     IMAGEM_LADO_MAXIMO,
@@ -69,11 +70,51 @@ class TempoEsgotado(RuntimeError):
 
 _pipeline = None
 _dispositivo_do_pipeline = ""
+# "sdxl", "outra" ou "" (ainda nao carregou). A grade de proporcoes e do SDXL:
+# avisar sobre ela num modelo de outra familia mandaria mudar o que esta certo.
+_familia_do_pipeline = ""
 _ultimo_dispositivo = ""
 _baixado = False
 _trava = threading.Lock()
 _temporizador: threading.Timer | None = None
 
+
+# As proporcoes em que o SDXL foi treinado. Metade da grade; a outra metade sao
+# as mesmas deitadas, e `GRADE_DO_SDXL` junta as duas.
+#
+# Todas ficam em torno de 1,05 megapixel — a grade e de PROPORCOES a area
+# constante, e nao de tamanhos livres. Gerar fora dela nao da erro: da assunto
+# duplicado, geometria torta e composicao incoerente, porque o modelo nunca viu
+# um enquadramento daquele formato.
+_MEIA_GRADE = (
+    (512, 2048),
+    (512, 1984),
+    (512, 1920),
+    (512, 1856),
+    (576, 1792),
+    (576, 1728),
+    (576, 1664),
+    (640, 1600),
+    (640, 1536),
+    (704, 1472),
+    (704, 1408),
+    (704, 1344),
+    (768, 1344),
+    (768, 1280),
+    (832, 1216),
+    (832, 1152),
+    (896, 1152),
+    (896, 1088),
+    (960, 1088),
+    (960, 1024),
+    (1024, 1024),
+)
+GRADE_DO_SDXL = tuple(
+    sorted(
+        {(largura, altura) for largura, altura in _MEIA_GRADE}
+        | {(altura, largura) for largura, altura in _MEIA_GRADE}
+    )
+)
 
 # Amostradores disponiveis, por nome curto. O amostrador decide como os passos
 # caminham do ruido para a imagem, e com pouco passo a escolha aparece.
@@ -224,17 +265,20 @@ def _avisar_do_vae(pipe, vae: str, meia: bool) -> None:
     saida de quem nao pediu. Mas ficar calado seria deixar a imagem sair pior
     sem nada denunciando, que e o unico defeito que este servico nao aceita.
     """
-    if vae or not meia:
-        return
+    global _familia_do_pipeline
 
     try:
         config = pipe.vae.config
         canais = int(config.latent_channels)
         escala = float(config.scaling_factor)
     except Exception:
+        _familia_do_pipeline = "outra"
         return
 
-    if canais != 4 or abs(escala - _ESCALA_DO_VAE_DO_SDXL) > 1e-4:
+    e_sdxl = canais == 4 and abs(escala - _ESCALA_DO_VAE_DO_SDXL) <= 1e-4
+    _familia_do_pipeline = "sdxl" if e_sdxl else "outra"
+
+    if vae or not meia or not e_sdxl:
         return
 
     logger.warning(
@@ -377,6 +421,20 @@ def _medidas(tamanho: str) -> tuple[int, int]:
     except ValueError as exc:
         raise HTTPException(422, f"size invalido: {tamanho!r}. Use algo como 1024x576.") from exc
 
+    megapixels = largura * altura / 1e6
+    if megapixels > IMAGEM_AREA_MAXIMA_MP:
+        # Teto de AREA, alem do teto por lado. Os dois precisam existir: um
+        # teto de lado em 1536 sozinho deixaria passar 1536x1536, que e o
+        # dobro da area de treino do modelo e VRAM que esta placa nao tem.
+        raise HTTPException(
+            422,
+            f"size {tamanho!r} tem {megapixels:.2f} megapixels, acima do teto de "
+            f"{IMAGEM_AREA_MAXIMA_MP} MP. O SDXL foi treinado em torno de 1,05 MP e "
+            f"gera pior acima disso. Proporcao mais proxima na grade de treino: "
+            f"{_perto_na_grade(largura, altura)}. Ajuste IMAGEM_AREA_MAXIMA_MP se "
+            f"esta placa comportar mais.",
+        )
+
     for medida in (largura, altura):
         if medida <= 0 or medida % 8:
             # Os modelos de difusao trabalham num espaco latente 8x menor. Um
@@ -391,6 +449,46 @@ def _medidas(tamanho: str) -> tuple[int, int]:
             )
 
     return largura, altura
+
+
+def _perto_na_grade(largura: int, altura: int) -> str:
+    """A proporcao treinada mais parecida com a pedida.
+
+    Comparada pela PROPORCAO e nao pela area, porque a area de toda a grade e
+    praticamente a mesma (0,95 a 1,05 MP): comparar por area mandaria todo
+    mundo para o 1024x1024. Quem pede 1200x630 — o tamanho de `og:image` — quer
+    aquele FORMATO, e o que serve a ele e o 1344x704.
+    """
+    if not altura:
+        return "1024x1024"
+
+    pedida = largura / altura
+    melhor = min(GRADE_DO_SDXL, key=lambda medida: abs(medida[0] / medida[1] - pedida))
+
+    return f"{melhor[0]}x{melhor[1]}"
+
+
+def _avisar_de_tamanho_fora_da_grade(largura: int, altura: int) -> None:
+    """Avisa, e nao recusa.
+
+    Recusar quebraria quem tem motivo para pedir outro formato — 1200x630 e o
+    tamanho que as redes sociais pedem para `og:image`, e ele nao esta na
+    grade. Quem pede assim aceita o custo; o que nao se aceita e pagar o custo
+    sem saber que existe.
+    """
+    if (largura, altura) in GRADE_DO_SDXL:
+        return
+    if _familia_do_pipeline != "sdxl":
+        return
+
+    logger.warning(
+        "size %dx%d esta fora da grade de proporcoes em que o SDXL foi treinado. "
+        "Nao da erro, mas costuma sair com assunto duplicado e geometria torta. "
+        "A proporcao treinada mais proxima e %s.",
+        largura,
+        altura,
+        _perto_na_grade(largura, altura),
+    )
 
 
 @router.post("/v1/images/generations", dependencies=[Depends(conferir)])
@@ -502,6 +600,9 @@ def gerar_imagens(
     import torch
 
     pipe = _obter_pipeline(dispositivo)
+    # Depois de carregar: so aqui se sabe a familia do modelo, e a grade de
+    # proporcoes so vale para o SDXL.
+    _avisar_de_tamanho_fora_da_grade(largura, altura)
 
     gerador = None
     if pedido.seed is not None:
@@ -588,6 +689,10 @@ def estado() -> dict:
         "vae": IMAGEM_VAE or "(o do modelo)",
         "amostrador": IMAGEM_SCHEDULER or "(o do modelo)",
         "lado_maximo": IMAGEM_LADO_MAXIMO,
+        "area_maxima_mp": IMAGEM_AREA_MAXIMA_MP,
+        # A grade de proporcoes do SDXL, publicada para o cliente validar
+        # contra ELA e nao contra uma copia propria que envelhece.
+        "grade": [f"{largura}x{altura}" for largura, altura in GRADE_DO_SDXL],
         "permite_cpu": IMAGEM_PERMITIR_CPU,
         "tempo_maximo": IMAGEM_TEMPO_MAXIMO,
     }

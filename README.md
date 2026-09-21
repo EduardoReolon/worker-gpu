@@ -215,7 +215,7 @@ quatro são silenciosas — a imagem sai, com 200, só pior.
 |---|---|---|
 | **prompt em português** | os codificadores de texto do SDXL (CLIP ViT-L, OpenCLIP ViT-bigG) foram treinados em legendas da web, esmagadoramente inglesas. `borrado` não está no vocabulário; `blurry` está | mande o prompt em inglês. O worker **avisa no journal** quando detecta português |
 | **VAE em float16** | o VAE que vem no SDXL estoura em float16 — e é em float16 que o serviço carrega, porque float32 não cabe. Dá manchas, faixas de cor e às vezes imagem preta | `IMAGEM_VAE=madebyollin/sdxl-vae-fp16-fix`. O worker avisa quando vê um VAE de SDXL sem ajuste |
-| **tamanho fora da área de treino** | o SDXL foi treinado em ~1024×1024 pixels de **área**, em proporções fixas. A de 16:9 que ele conhece é **1344×768**, não 1024×576 | peça 1344×768. O `IMAGEM_LADO_MAXIMO` subiu para 1344 para isso ser possível |
+| **tamanho fora da área de treino** | o SDXL foi treinado numa **grade de proporções a área constante** (~1,05 MP). A de 16:9 que ele conhece é **1344×768**, não 1024×576 | peça um tamanho da grade. `IMAGEM_LADO_MAXIMO=1536` para as largas caberem; `/health/` publica a grade em `imagem.grade` |
 | **amostrador padrão** | o Euler do diffusers precisa de mais passos para o mesmo resultado | `IMAGEM_SCHEDULER=dpm++2m_karras` |
 
 O prompt negativo deste serviço esteve em português por muito tempo, e por isso
@@ -289,6 +289,7 @@ journalctl --user -u worker-gpu -f
 | `ultimo_dispositivo: cpu` | caiu para CPU. Com `IMAGEM_PERMITIR_CPU=nao` isso não deveria acontecer |
 | imagens com manchas ou faixas de cor | `IMAGEM_VAE` vazio num modelo SDXL. Veja **Qualidade da imagem** |
 | imagens genéricas, mal compostas | prompt em português. Procure o aviso: `journalctl --user -u worker-gpu \| grep portugues` |
+| assunto duplicado, geometria torta | tamanho fora da grade de treino. `journalctl --user -u worker-gpu \| grep grade` |
 | uvicorn morre no boot | `BIND_HOST` inexistente, ou `BIND_PORT` vazio |
 
 ## Testes

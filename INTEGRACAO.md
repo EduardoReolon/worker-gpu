@@ -458,11 +458,43 @@ sem avisar.
 O tamanho quase não muda o tempo (veja o README): o custo é dominado por mover
 pesos entre RAM e VRAM. Peça o tamanho que você quer publicar.
 
-**Peça 1344×768 para 16:9, e não 1024×576.** O SDXL foi treinado em cerca de
-1024×1024 pixels de **área**, distribuídos em proporções fixas, e a de 16:9 que
-ele conhece é 1344×768. Pedir abaixo da área de treino gera anatomia e
-composição piores — e como o tamanho quase não muda o tempo, pedir menos não
-economiza nada. O teto por lado é 1344 (`imagem.lado_maximo` no `/health/`).
+#### O tamanho: use a grade de treino
+
+O SDXL não foi treinado em tamanhos livres. Ele foi treinado numa **grade de
+proporções a área constante** — todas em torno de 1,05 megapixel. Pedir fora
+dela não dá erro: dá assunto duplicado, geometria torta e composição
+incoerente.
+
+As que interessam para publicação:
+
+| Tamanho | Proporção | Para quê |
+|---|---|---|
+| `1024x1024` | 1:1 | feed quadrado |
+| `1152x896` | 1.29:1 | |
+| `1216x832` | 1.46:1 | |
+| `1344x768` | 1.75:1 | **capa / `og:image`** |
+| `1344x704` | 1.91:1 | o mais perto do `1200x630` das redes |
+| `1536x640` | 2.4:1 | faixa larga |
+
+A lista completa (~40 entradas, incluindo as em pé) está em
+`imagem.grade` no `/health/`. **Valide contra ela, não contra uma cópia sua** —
+uma cópia envelhece e ninguém percebe.
+
+Três limites, e eles não são o mesmo:
+
+- **cada lado múltiplo de 8** → senão `422`. É por isso que o `1200x630`
+  clássico de `og:image` **não passa**: 630 não é múltiplo de 8. Use `1344x704`;
+- **lado ≤ 1536** (`imagem.lado_maximo`) → senão `422`;
+- **área ≤ 1,2 MP** (`imagem.area_maxima_mp`) → senão `422`, com o tamanho da
+  grade mais próximo na mensagem. Existe porque o teto por lado sozinho
+  deixaria passar `1536x1536`, que é o dobro da área de treino.
+
+Fora da grade mas dentro dos três limites **passa**, e vira aviso no journal do
+worker em vez de recusa — quem pede assim costuma ter motivo. Mas saiba que
+está pagando por isso.
+
+E como o tamanho quase não muda o tempo (está medido no README: 4× mais pixels
+por 23% mais tempo), **pedir menos nunca economizou nada**.
 
 **O prompt precisa estar em inglês.** Os codificadores de texto do SDXL foram
 treinados em legendas da web, esmagadoramente inglesas: um prompt em português
@@ -638,6 +670,19 @@ pontos merecem olhada:
   cabeçalho — a única forma de 503 que saía daqui sem nada para decidir;
 - **`/health/` ganhou `ollama.carregados_detalhe`** e passou a nunca responder
   500. `ollama.carregados` continua sendo a lista de nomes, intocada;
+## O que mudou na 2.4
+
+Só a rota de imagem:
+
+- **o teto por lado subiu de 1344 para 1536**, para as proporções largas da
+  grade de treino (`1536x640`) serem pedíveis;
+- **teto de área novo**, 1,2 MP (`imagem.area_maxima_mp`). Necessário: sozinho,
+  um teto de lado em 1536 deixaria passar `1536x1536`, o dobro da área de
+  treino. O `422` diz o tamanho da grade mais próximo;
+- **`/health/` publica `imagem.grade`**, a lista de proporções treinadas.
+  Valide contra ela em vez de manter uma cópia;
+- **tamanho fora da grade vira aviso no journal**, e não recusa.
+
 ## O que mudou na 2.3
 
 Só a rota de imagem, e é sobre qualidade:

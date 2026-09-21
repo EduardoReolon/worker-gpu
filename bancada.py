@@ -48,6 +48,7 @@ from __future__ import annotations
 import argparse
 import html
 import itertools
+import json
 import os
 import sys
 import time
@@ -127,13 +128,44 @@ def _rotulo(
     modelo: str, vae: str, scheduler: str, passos: int, guidance: float, tamanho: str
 ) -> str:
     partes = [modelo.split("/")[-1]]
-    if vae:
-        partes.append(f"vae={vae.split('/')[-1]}")
-    partes.append(f"amostrador={scheduler or 'padrao'}")
+    partes.append(f"vae={vae.split('/')[-1] if vae else 'do-modelo'}")
+    partes.append(f"amostrador={scheduler or 'do-modelo'}")
     partes.append(f"{passos}p")
     partes.append(f"g={guidance}")
     partes.append(tamanho)
     return "  ".join(partes)
+
+
+def _apelido(
+    modelo: str, vae: str, scheduler: str, passos: int, guidance: float, tamanho: str
+) -> str:
+    """O nome do ARQUIVO, e ele precisa identificar a variante inteira sozinho.
+
+    Nao e capricho: e um defeito que esta bancada ja teve. O nome so trazia
+    modelo e passos, entao quem olhava as imagens e achava um defeito em
+    `01-cena3-s1000-stable-diffusion-xl-base-1.0-25p.png` nao tinha como saber
+    QUAL VAE e qual amostrador produziram aquilo — e a variante e justamente o
+    que se estava comparando.
+
+    O indice da faixa (`01`) tampouco resolvia: ele muda a cada rodada,
+    conforme a ordem dos argumentos, entao o nome de ontem aponta para outra
+    coisa hoje.
+    """
+
+    def limpo(texto: str, vazio: str) -> str:
+        bruto = texto.split("/")[-1] if texto else vazio
+        return "".join(c if c.isalnum() or c in "-." else "-" for c in bruto)[:28]
+
+    return "__".join(
+        (
+            limpo(modelo, "modelo"),
+            f"vae-{limpo(vae, 'padrao')}",
+            f"amo-{limpo(scheduler, 'padrao')}",
+            f"{passos}p",
+            f"g{guidance}".replace(".", "-"),
+            tamanho,
+        )
+    )
 
 
 def _pagina(saida: Path, prompts: list[str], linhas: list[dict], sementes: list[int]) -> Path:
@@ -294,6 +326,7 @@ def main() -> int:
         for passos, guidance, tamanho in de_chamada:
             largura, altura = _medidas(tamanho)
             rotulo = _rotulo(modelo, vae, scheduler, passos, guidance, tamanho)
+            apelido = _apelido(modelo, vae, scheduler, passos, guidance, tamanho)
             arquivos: dict[int, list[str]] = {}
             tempos: list[float] = []
 
@@ -320,10 +353,7 @@ def main() -> int:
                         break
                     tempos.append(time.perf_counter() - comeco)
 
-                    nome = (
-                        f"{len(linhas):02d}-cena{indice + 1}-s{semente}-"
-                        f"{modelo.split('/')[-1]}-{passos}p.png"
-                    ).replace(" ", "_")
+                    nome = f"cena{indice + 1}__s{semente}__{apelido}.png"
                     resultado.images[0].save(saida / nome)
                     arquivos[indice].append(nome)
 
@@ -351,6 +381,30 @@ def main() -> int:
         print("\nNada foi gerado. Veja os erros acima.", file=sys.stderr)
         return 1
 
+    # Um manifesto ao lado das imagens. O nome do arquivo ja identifica a
+    # variante; o manifesto guarda o que nele nao cabe — o prompt de cada cena,
+    # o negativo em vigor e o custo medido de cada variante.
+    (saida / "variantes.json").write_text(
+        json.dumps(
+            {
+                "prompts": {f"cena{i + 1}": prompt for i, prompt in enumerate(prompts)},
+                "negativo": imagem.IMAGEM_NEGATIVO,
+                "sementes": sementes,
+                "variantes": [
+                    {
+                        "rotulo": linha["rotulo"],
+                        "segundos_por_imagem": round(linha["segundos"], 1),
+                        "pico_vram_gb": round(linha["vram"], 1),
+                    }
+                    for linha in linhas
+                ],
+            },
+            indent=2,
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
     pagina = _pagina(saida, prompts, linhas, sementes)
 
     print(f"\n{'variante':<58}  {'s/imagem':>9}  {'pico VRAM':>10}")
@@ -359,6 +413,7 @@ def main() -> int:
         print(f"{linha['rotulo'][:58]:<58}  {linha['segundos']:8.1f}s  {linha['vram']:8.1f} GB")
 
     print(f"\nAbra e julgue:  xdg-open {pagina}")
+    print(f"Prompts, negativo e custo por variante: {saida / 'variantes.json'}")
     print(
         "\nOlhe nesta ordem, que e a ordem em que a geracao realista quebra:\n"
         "  1. maos e dedos       — o defeito que mais denuncia\n"

@@ -1,5 +1,5 @@
 {
-  "_contrato_versao": "2.3",
+  "_contrato_versao": "2.4",
   "_rota": "POST /parse/",
   "_nota": "multipart com o campo `file`. `X-Expected-Sha256` e opcional e confere o arquivo.",
   "markdown": "# Titulo\n\nUm paragrafo.",

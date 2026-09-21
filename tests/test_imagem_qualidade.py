@@ -234,3 +234,115 @@ def test_o_health_publica_o_que_decide_qualidade(worker):
     assert "amostrador" in bloco
     assert "guidance" in bloco
     assert "lado_maximo" in bloco
+
+
+# ---------------------------------------------------------------------------
+# A grade de proporcoes do SDXL
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("tamanho", ["1024x1024", "1344x768", "1536x640", "768x1344"])
+def test_a_grade_de_treino_inteira_passa(imagem_mod, tamanho):
+    """Com o teto por lado em 1024 as proporcoes largas voltavam 422 — dava
+    para pedir so a quadrada, que e a pior escolha para uma capa."""
+    largura, altura = imagem_mod._medidas(tamanho)
+
+    assert (largura, altura) in imagem_mod.GRADE_DO_SDXL
+
+
+def test_a_grade_fica_toda_perto_de_um_megapixel(imagem_mod):
+    """E uma grade de PROPORCOES a area constante, e nao de tamanhos livres.
+    E por isso que o teto de area protege a qualidade junto com a placa."""
+    areas = [largura * altura / 1e6 for largura, altura in imagem_mod.GRADE_DO_SDXL]
+
+    assert 0.94 <= min(areas) and max(areas) <= 1.06
+
+
+def test_uma_area_grande_demais_e_recusada_com_a_alternativa(imagem_mod):
+    """O teto por lado sozinho deixaria passar 1536x1536: dentro do lado
+    maximo, e o dobro da area de treino. Nao daria erro — daria assunto
+    duplicado e VRAM que esta placa nao tem."""
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as capturado:
+        imagem_mod._medidas("1536x1536")
+
+    detalhe = capturado.value.detail
+    assert "megapixels" in detalhe
+    # E diz o que pedir no lugar, em vez de so recusar.
+    assert "1024x1024" in detalhe
+
+
+@pytest.mark.parametrize(
+    "pedido,esperado",
+    [
+        ("1200x630", "1344x704"),
+        ("1024x576", "1344x768"),
+        ("800x800", "1024x1024"),
+        ("600x900", "832x1216"),
+    ],
+)
+def test_a_alternativa_e_escolhida_pela_proporcao(imagem_mod, pedido, esperado):
+    """Pela proporcao e nao pela area: a area de toda a grade e praticamente a
+    mesma, entao comparar por area mandaria todo mundo para 1024x1024. Quem
+    pede 1200x630 quer aquele FORMATO."""
+    largura, altura = (int(parte) for parte in pedido.split("x"))
+
+    assert imagem_mod._perto_na_grade(largura, altura) == esperado
+
+
+def test_um_tamanho_fora_da_grade_avisa_mas_nao_recusa(imagem_mod, caplog, monkeypatch):
+    """Recusar quebraria quem tem motivo para pedir outro formato. Quem pede
+    assim aceita o custo; o que nao se aceita e pagar sem saber que existe."""
+    monkeypatch.setattr(imagem_mod, "_familia_do_pipeline", "sdxl")
+
+    # Nao levanta.
+    assert imagem_mod._medidas("1200x632") == (1200, 632)
+
+    with caplog.at_level(logging.WARNING, logger="worker-gpu.imagem"):
+        imagem_mod._avisar_de_tamanho_fora_da_grade(1200, 632)
+
+    assert "fora da grade" in caplog.text
+    assert "1344x704" in caplog.text
+
+
+def test_o_og_image_classico_nem_chega_na_grade(imagem_mod):
+    """1200x630, o tamanho que as redes sociais pedem para `og:image`, e
+    recusado ANTES da grade: 630 nao e multiplo de 8. A recusa e certa — o
+    modelo arredondaria por dentro e devolveria outro tamanho, sem avisar —,
+    mas quem integra precisa saber que esse valor exato nao passa."""
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException, match="multiplo de 8"):
+        imagem_mod._medidas("1200x630")
+
+
+def test_um_tamanho_na_grade_nao_avisa(imagem_mod, caplog, monkeypatch):
+    monkeypatch.setattr(imagem_mod, "_familia_do_pipeline", "sdxl")
+
+    with caplog.at_level(logging.WARNING, logger="worker-gpu.imagem"):
+        imagem_mod._avisar_de_tamanho_fora_da_grade(1344, 768)
+
+    assert caplog.text == ""
+
+
+def test_a_grade_nao_e_cobrada_de_outra_familia(imagem_mod, caplog, monkeypatch):
+    """A grade e do SDXL. Avisar sobre ela num SD 3.5 ou num FLUX mandaria
+    mudar o que esta certo."""
+    monkeypatch.setattr(imagem_mod, "_familia_do_pipeline", "outra")
+
+    with caplog.at_level(logging.WARNING, logger="worker-gpu.imagem"):
+        imagem_mod._avisar_de_tamanho_fora_da_grade(1200, 630)
+
+    assert caplog.text == ""
+
+
+def test_o_health_publica_a_grade(worker):
+    """Publicada para o cliente validar contra ELA, e nao contra uma copia
+    propria que envelhece — foi assim que o `busy` virou `ocupada` sem ninguem
+    perceber."""
+    from fastapi.testclient import TestClient
+
+    bloco = TestClient(worker.app).get("/health/").json()["imagem"]
+
+    assert "1344x768" in bloco["grade"]
+    assert "1536x640" in bloco["grade"]
+    assert bloco["area_maxima_mp"] >= 1.05
