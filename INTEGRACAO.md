@@ -626,13 +626,19 @@ está de pé, e é isso que o 200 afirma. Um diagnóstico que estoura não serve
 para descobrir o que estourou. Trate um bloco com `erro` como "esta parte está
 doente", e não como "o worker caiu".
 
-Dois campos valem alarme do seu lado:
+Três campos valem alarme do seu lado:
 
 - **`ha_segundos` acima de ~120 com `ocupante: "texto"`** — trabalho preso. O
   lock não tem watchdog: se a chamada ao Ollama pendurar, ele fica retido até
   `OLLAMA_TIMEOUT` e todo mundo leva 503 nesse tempo;
 - **um bloco com `erro`** — a máquina está degradada de um jeito que os 200 não
-  denunciam.
+  denunciam;
+- **`memoria.swap_mb` acima de zero** — o processo do worker está no swap, e
+  isso não aparece como erro em lugar nenhum: aparece como lentidão que você vai
+  atribuir ao modelo. O worker retém RAM por desenho (os pesos do modelo de
+  imagem ficam na RAM para o pico de VRAM caber ao lado do Ollama), então é ele
+  que vai para o swap primeiro. Se isso acontecer com frequência, é conversa
+  com o dono da máquina — o README tem a seção **Convivendo com a máquina**.
 
 ## Mantendo o contrato honesto
 
@@ -670,6 +676,21 @@ pontos merecem olhada:
   cabeçalho — a única forma de 503 que saía daqui sem nada para decidir;
 - **`/health/` ganhou `ollama.carregados_detalhe`** e passou a nunca responder
   500. `ollama.carregados` continua sendo a lista de nomes, intocada;
+## O que mudou na 2.5
+
+Nada muda no que você manda. Dois acréscimos no `/health/` e uma mudança de
+comportamento que você pode observar:
+
+- **`memoria`** novo, com `rss_mb` e `swap_mb` do processo do worker. Vale
+  alarme: veja a seção **Saúde**;
+- **`conversao.ocioso_segundos`** novo, e **o Docling passou a ser descarregado
+  depois de ocioso** (`CONVERSAO_OCIOSO_SEGUNDOS`, 900 s). Antes ele ficava
+  residente para sempre depois da primeira conversão. Para você isso significa
+  que `conversao.carregado` agora volta a `false` sozinho, e que **um `/parse/`
+  depois de um intervalo longo paga dezenas de segundos de recarga** — o mesmo
+  que já acontecia com a primeira conversão após um restart. Se isso atrapalhar
+  o seu lote, o dono da máquina sobe a variável.
+
 ## O que mudou na 2.4
 
 Só a rota de imagem:

@@ -1,0 +1,27 @@
+# Aviso na tela quando o worker morre. Instale a mao, so se voce quiser.
+#
+#   cp deploy/worker-gpu-aviso.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#
+# e acrescente ao `.env` ... nao: acrescente a unit do worker, porque isto e
+# systemd e nao aplicacao. Rode `./deploy/instalar.sh` depois de descomentar a
+# linha `OnFailure=` que ele ja gera comentada.
+#
+# Por que existe: o worker morre em silencio quando estoura o `MemoryMax`, e
+# `Restart=always` o traz de volta em 10s. Isso e o desenho funcionando — mas
+# se ele estiver morrendo em laco, o unico lugar que conta e o journal, e
+# ninguem le o journal sem motivo. Um aviso na tela e o motivo.
+#
+# Nao trata nada: so avisa. Quem conserta e voce, com o numero que o
+# `/health/` publica em `memoria.rss_mb` e `memoria.swap_mb`.
+
+[Unit]
+Description=Avisa na tela que o worker-gpu caiu
+
+[Service]
+Type=oneshot
+# `--urgency=critical` para a notificacao nao sumir sozinha: um aviso que
+# desaparece enquanto voce olha para outro monitor nao avisou nada.
+ExecStart=/usr/bin/notify-send --urgency=critical --icon=dialog-warning \
+    "worker-gpu caiu" \
+    "Provavelmente memoria (MemoryMax). Ele volta em 10s. Veja: journalctl --user -u worker-gpu -n 40"

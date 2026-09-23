@@ -37,11 +37,76 @@ ExecStart=RAIZ/venv/bin/uvicorn app:app \
 Restart=always
 RestartSec=10
 
+# Aviso na tela quando ele cai. Descomente para ligar, depois de copiar o
+# `worker-gpu-aviso.service` para o mesmo lugar que esta unit.
+#
+# Vale ligar justamente porque a morte por memoria e SILENCIOSA: o
+# `Restart=always` acima traz o worker de volta em 10s, entao um worker
+# morrendo em laco parece um worker funcionando devagar.
+# OnFailure=worker-gpu-aviso.service
+
 # Curto de proposito. O laco de difusao nao olha para sinal, entao um
 # `systemctl restart` fica em `deactivating (stop-sigterm)` ate este prazo.
 # Quem limita a duracao de um trabalho e o `IMAGEM_TEMPO_MAXIMO`, que desiste
 # sozinho; aqui basta o tempo de terminar um passo e soltar a placa.
 TimeoutStopSec=90
+
+# ---------------------------------------------------------------------------
+# Memoria: o worker morre antes de levar a maquina com ele
+# ---------------------------------------------------------------------------
+# O worker retem RAM POR DESENHO. `enable_model_cpu_offload()` mantem os pesos
+# do modelo de imagem na RAM e sobe para a placa so o submodulo em uso: e o que
+# faz o pico de VRAM cair de ~7 GB para ~5,4 GB e caber ao lado do Ollama. O
+# preco sao 5 a 6 GB de memoria ANONIMA parada entre pedidos.
+#
+# Memoria anonima parada e o primeiro alvo do kernel quando ele precisa de
+# paginas. Os pesos do Ollama nao sao: eles sao um arquivo mapeado, e sob
+# pressao o kernel descarta aquelas paginas de graca. As do worker precisam ser
+# ESCRITAS no swap antes de serem tomadas — e foi por isso que, nesta maquina,
+# quem foi para o swap foi o worker e nao o modelo de 30B.
+#
+# `MemorySwapMax=0` **proibe** este servico de usar swap. Nao e so economia de
+# SSD: um worker no swap nao da erro e nao fica lento de um jeito que se note —
+# ele fica lento de um jeito que se atribui ao modelo.
+MemorySwapMax=0
+
+# `MemoryHigh` e o freio, `MemoryMax` e a parede.
+#
+# Passando do `High`, o kernel reclama paginas com agressividade e o processo
+# e desacelerado — sem morrer. Passando do `Max`, ele e morto. Os dois juntos
+# dao a ordem certa: primeiro aperta, depois mata.
+#
+# Morrer aqui e ACEITAVEL, e o resto do arranjo depende disso: `Restart=always`
+# sobe de novo em 10s, o lock da GPU e um `threading.Lock` que morre com o
+# processo (nao ha lock preso possivel), e os clientes ja tratam conexao
+# cortada como adiavel. Pior que morrer e arrastar a maquina inteira.
+#
+# Ajuste para a SUA maquina. Numa de 32 GB com um modelo de 30B ao lado, 10/14
+# deixa o worker trabalhar e ainda sobra para o desktop.
+#
+# Os valores vem do `.env` (`WORKER_MEMORY_HIGH` e `WORKER_MEMORY_MAX`), porque
+# esta copia e REESCRITA a cada `instalar.sh` — ajustar aqui seria perder o
+# ajuste no proximo install, em silencio.
+MemoryHigh=MEMORIA_FREIO
+MemoryMax=MEMORIA_PAREDE
+
+# Quando o SISTEMA fica sem memoria, que morra o worker — nao o navegador.
+#
+# Precisa do `systemd-oomd` ativo (`systemctl status systemd-oomd`). Sem ele
+# estas duas linhas sao ignoradas em silencio, e a protecao volta a ser o
+# `MemoryMax` acima.
+ManagedOOMMemoryPressure=kill
+ManagedOOMMemoryPressureLimit=80%
+
+# ---------------------------------------------------------------------------
+# Prioridade: o desktop vem primeiro
+# ---------------------------------------------------------------------------
+# A difusao satura a CPU durante minutos, e o Docling tambem. Sem isto, mover
+# o mouse enquanto o worker trabalha engasga — o que e absurdo, porque o
+# trabalho dele nao tem pressa e o seu mouse tem.
+Nice=10
+CPUWeight=50
+IOWeight=50
 
 NoNewPrivileges=true
 PrivateTmp=true

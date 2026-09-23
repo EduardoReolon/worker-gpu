@@ -265,6 +265,235 @@ ruim não dá para saber de quem foi a culpa.
 Olhe nesta ordem, que é a ordem em que a geração realista quebra: **mãos e
 dedos**, **pele**, **reflexo e metal**, **texto na cena**, **fundo desfocado**.
 
+## Convivendo com a máquina
+
+Esta máquina não é um servidor. Ela tem 32 GB de RAM, uma placa de 8 GB, um
+modelo de texto de 30B, o worker, e uma pessoa que às vezes quer jogar. Esta
+seção é sobre o worker **não atropelar o resto**.
+
+### Quem vai para o swap, e por quê
+
+Não é o Ollama. **É o worker, e por desenho.**
+
+`enable_model_cpu_offload()` (`imagem.py`) mantém os pesos do modelo de imagem
+na **RAM** e sobe para a placa só o submódulo em uso. É o que faz o pico de
+VRAM cair de ~7 GB para ~5,4 GB, e é o que permite a difusão caber ao lado do
+Ollama. O preço são **5 a 6 GB de memória anônima parada** entre pedidos.
+
+E a diferença entre os dois tipos de memória é tudo:
+
+| | Ollama (pesos) | Worker (pesos) |
+|---|---|---|
+| tipo | arquivo mapeado (`mmap`) | **anônima** |
+| sob pressão, o kernel… | **descarta de graça** — a página está limpa e o arquivo está no disco | precisa **escrever no swap** primeiro |
+| custo em SSD | zero | escrita, e leitura de volta a cada acesso |
+
+Por isso o worker é o primeiro a ir para o swap mesmo sendo o menor dos dois.
+E por isso ele agora publica o próprio número:
+
+```bash
+curl -s http://127.0.0.1:8090/health/ | jq .memoria
+# {"rss_mb": 5931.4, "swap_mb": 0.0}
+```
+
+`swap_mb` acima de zero também vira **um aviso no journal**, uma vez por
+subida. Sem ele, um worker no swap não dá erro e não fica lento de um jeito
+que se note — fica lento de um jeito que se atribui ao modelo, e quem
+investiga vai olhar a GPU.
+
+### `OLLAMA_NOMMAP=1` faz o contrário do que parece
+
+Se você ligou isso para "forçar a RAM", **desligue.** Ele converte os pesos do
+Ollama de arquivo mapeado (descartável de graça) em memória anônima
+(swappável) — exatamente o tipo que você está tentando evitar. Com `mmap`
+ligado, os pesos do modelo de 30B **nunca** podem ir para o swap: são páginas
+limpas de arquivo, e o kernel as solta sem escrever nada.
+
+O que o `mmap` faz sob pressão é empurrar **outra coisa** para o swap, e essa
+outra coisa era o worker. O conserto é limitar o worker, não desmapear o
+Ollama.
+
+```ini
+# /etc/systemd/system/ollama.service.d/override.conf
+Environment="OLLAMA_HOST=127.0.0.1:11434"
+Environment="OLLAMA_MAX_LOADED_MODELS=1"
+Environment="OLLAMA_NUM_PARALLEL=1"
+# Environment="OLLAMA_NOMMAP=1"   <- fora: transforma page cache em swap
+MemoryMax=24G
+MemorySwapMax=0
+```
+
+### O SSD: meça antes de decidir
+
+**Desligar o swap por medo de desgaste provavelmente é caro e desnecessário.**
+As contas:
+
+- um NVMe TLC de consumo é avaliado em **150 a 600 TBW** (confira o seu);
+- pressão de memória ocasional escreve na ordem de **GB por dia**, não centenas;
+- 10 GB/dia = 3,6 TB/ano → num drive de 300 TBW, **décadas**.
+
+Meça o seu em vez de estimar:
+
+```bash
+sudo smartctl -a /dev/nvme0n1 | grep -Ei 'Data Units Written|Percentage Used|Power_On'
+```
+
+`Data Units Written` × 512.000 = bytes escritos desde novo. `Percentage Used`
+é a estimativa do próprio drive: se está em 2% depois de dois anos, desgaste
+não é o seu problema.
+
+**O problema real do swap aqui não é desgaste, é latência.** Um processo de 6 GB
+sendo trazido de volta do swap engasga o desktop por segundos. É isso que
+incomoda, e é isso que as medidas abaixo resolvem.
+
+E swap **desligado** tem um custo que você já sentiu: sem válvula de escape, a
+única saída do kernel é matar alguém — e pode ser o navegador, a IDE, ou o
+Ollama no meio de uma geração.
+
+### zram: a válvula que não toca no disco
+
+É a melhor mudança isolada para o seu caso. Swap **comprimido na própria RAM**:
+zero escrita em SSD, e o kernel volta a ter para onde empurrar páginas frias.
+Com `zstd`, 4 GB de zram costumam guardar 8 a 12 GB de páginas.
+
+```bash
+sudo apt install systemd-zram-generator     # ou zram-generator
+sudo tee /etc/systemd/zram-generator.conf <<'EOF'
+[zram0]
+zram-size = 4096
+compression-algorithm = zstd
+EOF
+sudo systemctl daemon-reload
+sudo systemctl start systemd-zram-setup@zram0.service
+
+# Deixe o kernel usar o zram de verdade: com swap em RAM, swappiness alto é bom.
+echo 'vm.swappiness=100' | sudo tee /etc/sysctl.d/99-zram.conf
+sudo sysctl --system
+
+swapon --show     # tem que aparecer /dev/zram0, prioridade alta
+```
+
+Se você mantiver **também** um swap em disco, dê prioridade menor a ele
+(`pri=10` no `fstab` contra a prioridade alta do zram): o kernel usa o zram
+primeiro e só cai no disco quando ele enche.
+
+### Os limites do worker
+
+A unit (`deploy/worker-gpu.service`) já vem com eles:
+
+```ini
+MemorySwapMax=0          # este serviço NUNCA usa swap
+MemoryHigh=10G           # o freio: acima daqui o kernel aperta
+MemoryMax=14G            # a parede: acima daqui ele morre
+ManagedOOMMemoryPressure=kill    # se o SISTEMA apertar, que morra ele
+Nice=10                          # o seu mouse vem antes
+CPUWeight=50
+IOWeight=50
+```
+
+**Morrer aqui é aceitável, e o resto do arranjo depende disso.**
+`Restart=always` sobe de novo em 10 s; o lock da GPU é um `threading.Lock` que
+morre com o processo (não existe lock preso possível); e os clientes já tratam
+conexão cortada como adiável. Pior que morrer é arrastar a máquina.
+
+Ajuste `MemoryHigh`/`MemoryMax` para a sua: 10/14 GB numa máquina de 32 GB com
+um 30B ao lado deixa o worker trabalhar e sobra para o desktop. Confira o que
+ele realmente usa em `memoria.rss_mb` antes de apertar.
+
+`ManagedOOMMemoryPressure` precisa do `systemd-oomd` ativo
+(`systemctl status systemd-oomd`); sem ele a linha é ignorada em silêncio e a
+proteção volta a ser o `MemoryMax`.
+
+### O aviso na tela
+
+A morte por memória é **silenciosa**: o `Restart=always` traz o worker de volta
+em 10 s, então um worker morrendo em laço parece um worker lento. Para saber:
+
+```bash
+cp deploy/worker-gpu-aviso.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+# e descomente a linha OnFailure= na unit do worker
+```
+
+### Modo jogo
+
+Parar o worker não é um comando, são dois — e esquecer o segundo deixa 5 GB de
+VRAM presos no Ollama, que é justamente o que você queria de volta:
+
+```bash
+./deploy/pausar.sh              # para o worker e solta o modelo do Ollama
+./deploy/pausar.sh --retomar    # devolve tudo
+```
+
+Ele confere o que ficou carregado e mostra a VRAM livre no fim. **Não desabilita
+nada**: um reboot volta ao normal sozinho, de propósito — uma pausa que
+sobrevive ao boot vira um worker desligado que ninguém lembra de ligar, e o
+sintoma chega no cliente como 503 sem fim.
+
+### O que a memória devolve sozinha
+
+| O quê | Quando solta | Variável |
+|---|---|---|
+| modelo de imagem (~5 GB RAM) | depois de ocioso | `IMAGEM_OCIOSO_SEGUNDOS=300` |
+| Docling (~1-2 GB RAM) | depois de ocioso | `CONVERSAO_OCIOSO_SEGUNDOS=900` |
+| modelo de texto (VRAM) | antes de gerar imagem | `OLLAMA_DESCARREGAR_PARA_IMAGEM=sim` |
+
+O Docling **ficava residente para sempre** até a versão 2.5: a rota de imagem
+tinha o seu temporizador e esta não tinha nada. Se você converte poucos PDFs,
+baixe `CONVERSAO_OCIOSO_SEGUNDOS`; se converte em lote, suba — recarregar custa
+dezenas de segundos.
+
+### ComfyUI, Forge e afins
+
+Vale para experimentar. **Não vale como serviço junto do worker**, e o motivo é
+o `arbitro.py`: o lock é um `threading.Lock` em memória, e ele só é correto
+porque **todo** pedido de GPU passa pelo mesmo processo. Um ComfyUI de pé ao
+lado é um segundo dono da placa sem arbitragem — exatamente a situação anterior
+a este repositório, e o defeito que ele existe para impedir. Some a isso mais um
+processo Python residente com pesos na RAM, que é o problema desta seção.
+
+O que eles têm de melhor é real: gestão de memória mais agressiva (o
+offloading do Forge é bom), VAE em blocos, LoRA, e uma interface para tentar
+coisas. Duas formas honestas de usar:
+
+- **para experimentar**, no lugar da `bancada.py`, com o worker **parado**
+  (`./deploy/pausar.sh`). Aí não há dois donos: há um por vez;
+- **como backend**, se um dia a qualidade justificar: o worker chamaria a API
+  do ComfyUI **de dentro do lock**, do mesmo jeito que chama o Ollama, com o
+  ComfyUI em loopback e com os seus próprios `MemoryMax`/`MemorySwapMax`. É o
+  padrão que já existe aqui, e é o único arranjo em que a arbitragem continua
+  valendo.
+
+O que **não** funciona é ComfyUI e worker atendendo pedidos ao mesmo tempo. Não
+dá erro: cai para CPU, ou um dos dois não acha VRAM.
+
+### Receita de diagnóstico
+
+Quando a máquina engasgar, nesta ordem:
+
+```bash
+# 1. Quem está na RAM e quem está no swap, os maiores primeiro
+ps -eo pid,comm,rss,vsz --sort=-rss | head -12
+for p in /proc/[0-9]*; do
+  s=$(awk '/VmSwap/{print $2}' $p/status 2>/dev/null)
+  [ "${s:-0}" -gt 10240 ] && echo "$(cat $p/comm) $((s/1024)) MB no swap"
+done | sort -k2 -rn | head
+
+# 2. O worker, pelo que ele mesmo diz
+curl -s http://127.0.0.1:8090/health/ | jq '{memoria, ocupada, ha_segundos, imagem: .imagem.carregado, conversao: .conversao.carregado}'
+
+# 3. Ele morreu por memória?
+journalctl --user -u worker-gpu | grep -iE 'oom|killed|swap'
+
+# 4. A placa
+nvidia-smi --query-gpu=memory.used,memory.total --format=csv
+curl -s http://127.0.0.1:11434/api/ps | jq '.models[] | {name, size_vram}'
+```
+
+`memoria.swap_mb` alto **e** `imagem.carregado: true` **e** `ocupada: false` é o
+caso clássico: o worker está com 5 GB parados no swap esperando um pedido que
+não veio. Baixe `IMAGEM_OCIOSO_SEGUNDOS`.
+
 ## Diagnóstico
 
 ```bash
@@ -290,6 +519,8 @@ journalctl --user -u worker-gpu -f
 | imagens com manchas ou faixas de cor | `IMAGEM_VAE` vazio num modelo SDXL. Veja **Qualidade da imagem** |
 | imagens genéricas, mal compostas | prompt em português. Procure o aviso: `journalctl --user -u worker-gpu \| grep portugues` |
 | assunto duplicado, geometria torta | tamanho fora da grade de treino. `journalctl --user -u worker-gpu \| grep grade` |
+| a máquina inteira engasga | o worker no swap. Veja **Convivendo com a máquina** e `curl /health/ \| jq .memoria` |
+| o worker reinicia sozinho em laço | estourou o `MemoryMax`. `journalctl --user -u worker-gpu \| grep -i oom` |
 | uvicorn morre no boot | `BIND_HOST` inexistente, ou `BIND_PORT` vazio |
 
 ## Testes

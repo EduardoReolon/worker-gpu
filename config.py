@@ -209,6 +209,19 @@ CONVERSAO_ATIVA = _booleano("CONVERSAO_ATIVA", True)
 DOCLING_DEVICE = os.environ.get("DOCLING_DEVICE", "auto").lower()
 DOCLING_THREADS = _inteiro("DOCLING_THREADS", 0)
 DOCLING_OCR = _booleano("DOCLING_OCR", False)
+
+# Devolver a memoria do conversor depois de um tempo sem pedido, em segundos.
+# 0 desliga (o conversor fica residente, que era o comportamento anterior).
+#
+# O Docling ficava carregado PARA SEMPRE depois da primeira conversao — a rota
+# de imagem tinha o seu `IMAGEM_OCIOSO_SEGUNDOS` e esta nao tinha nada. Sao
+# cerca de 1 a 2 GB de memoria anonima parada, e memoria anonima parada e
+# exatamente o que o kernel manda para o swap primeiro.
+#
+# Mais alto que o da imagem de proposito: recarregar o Docling custa dezenas de
+# segundos, e um acervo de PDF costuma vir em lote — soltar entre dois arquivos
+# do mesmo lote seria pagar a carga duas vezes por nada.
+CONVERSAO_OCIOSO_SEGUNDOS = _inteiro("CONVERSAO_OCIOSO_SEGUNDOS", 900)
 MAX_PDF_BYTES = _inteiro("MAX_PDF_BYTES", 100 * 1024 * 1024)
 
 

@@ -50,6 +50,7 @@ import conversao
 import imagem
 import modelos
 import ollama
+import recursos
 import texto
 from arbitro import ARBITRO
 from config import CONVERSAO_ATIVA, IMAGEM_ATIVA
@@ -61,7 +62,7 @@ logger = logging.getLogger("worker-gpu")
 # ai quem integra precisa olhar, e `INTEGRACAO.md` ganha uma secao.
 # Acrescentar campo nao quebra ninguem e nao sobe nada: todo cliente deve
 # ignorar o que nao conhece.
-CONTRATO_VERSAO = "2.4"
+CONTRATO_VERSAO = "2.5"
 
 app = FastAPI(title="worker-gpu", version=CONTRATO_VERSAO)
 
@@ -172,6 +173,12 @@ def health():
         "imagem": IMAGEM_ATIVA,
         "conversao": CONVERSAO_ATIVA,
     }
+    # Memoria DESTE processo, e nao do sistema. E o campo que faltava: nesta
+    # maquina quem foi para o swap foi o worker, nao o Ollama, e a suspeita
+    # caiu no lugar errado por dias porque nada aqui dizia isso. O worker
+    # retem RAM por desenho (`enable_model_cpu_offload`), entao o numero
+    # precisa estar visivel.
+    corpo["memoria"] = _bloco("memoria", recursos.memoria)
     corpo["ollama"] = _bloco("ollama", _bloco_do_ollama)
 
     if IMAGEM_ATIVA:

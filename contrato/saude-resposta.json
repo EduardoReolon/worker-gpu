@@ -1,16 +1,21 @@
 {
-  "_contrato_versao": "2.4",
+  "_contrato_versao": "2.5",
   "_rota": "GET /health/ (sem credencial, de proposito)",
   "_nota": "Este endpoint NUNCA devolve 500. Um bloco que falha ao ser coletado vira {\"erro\": \"<tipo>: <mensagem>\"} no lugar do bloco, com HTTP 200 — o processo esta de pe, e e isso que o 200 afirma. Os blocos `imagem` e `conversao` so aparecem quando a rota correspondente esta ligada (veja `rotas`).",
   "_nota_baixando": "Downloads de modelo em curso, normalmente lista vazia. Um download NAO aparece em `ocupada` porque nao usa a placa: ele e rede e disco, e a imagem e a conversao seguem funcionando enquanto ele acontece. Enquanto um modelo esta aqui, os pedidos dele levam 503 `baixando_modelo`.",
   "_nota_carregados": "`carregados` e a lista de NOMES e continua sendo `list[str]`. `carregados_detalhe` e o registro do `/api/ps` do Ollama repassado; o worker garante que cada item tem `name`, e o RESTO das chaves e do Ollama e varia com a versao dele. `context_length` e a janela com que o modelo foi carregado — e uma dica de MAQUINA, nao confirmacao de que um pedido especifico rodou com ela.",
   "status": "ok",
   "service": "worker-gpu",
-  "contrato_versao": "2.4",
+  "contrato_versao": "2.5",
   "ocupada": false,
   "ocupante": null,
   "modelo": null,
   "ha_segundos": 0,
+  "_nota_memoria": "Memoria do PROCESSO do worker, em MB, lida do /proc/self/status. Nao e do sistema. Existe porque o worker retem RAM por desenho (enable_model_cpu_offload mantem os pesos do modelo de imagem na RAM), entao e ele que vai para o swap primeiro — nao o Ollama, cujos pesos sao arquivo mapeado e podem ser descartados sem escrever nada. `swap_mb` acima de zero tambem vira aviso no journal. Os campos podem faltar numa plataforma sem /proc.",
+  "memoria": {
+    "rss_mb": 5931.4,
+    "swap_mb": 0.0
+  },
   "rotas": {
     "texto": true,
     "imagem": true,
@@ -55,6 +60,7 @@
     "dispositivo": "auto",
     "ocr": false,
     "threads": "auto",
-    "carregado": true
+    "carregado": true,
+    "ocioso_segundos": 900
   }
 }

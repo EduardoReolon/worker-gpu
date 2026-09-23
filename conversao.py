@@ -12,6 +12,7 @@ trocar depois com uma linha no `.env`.
 
 from __future__ import annotations
 
+import gc
 import hashlib
 import hmac
 import importlib.util
@@ -24,7 +25,13 @@ from fastapi import APIRouter, Depends, Header, HTTPException, UploadFile
 
 import respostas
 from arbitro import ARBITRO, GpuOcupada
-from config import DOCLING_DEVICE, DOCLING_OCR, DOCLING_THREADS, MAX_PDF_BYTES
+from config import (
+    CONVERSAO_OCIOSO_SEGUNDOS,
+    DOCLING_DEVICE,
+    DOCLING_OCR,
+    DOCLING_THREADS,
+    MAX_PDF_BYTES,
+)
 from seguranca import conferir
 
 logger = logging.getLogger("worker-gpu.conversao")
@@ -33,6 +40,7 @@ router = APIRouter()
 
 _conversor = None
 _trava = threading.Lock()
+_temporizador: threading.Timer | None = None
 
 
 def conferir_ocr() -> None:
@@ -104,6 +112,49 @@ def obter_conversor():
     return _conversor
 
 
+def descarregar() -> None:
+    """Solta o conversor e devolve a memoria dele.
+
+    O Docling ficava residente para sempre depois da primeira conversao: a
+    rota de imagem tinha o seu temporizador de descarga e esta nao tinha nada.
+    Sao 1 a 2 GB de memoria ANONIMA parada — e e a anonima parada que o kernel
+    escreve no swap quando precisa de paginas, porque ela nao pode ser
+    simplesmente descartada como um arquivo mapeado.
+
+    Nao mexe na placa: `DOCLING_DEVICE` pode ser `cpu`, e mesmo em `cuda` quem
+    arbitra a VRAM e o `arbitro`. Aqui o que se devolve e RAM.
+    """
+    global _conversor
+
+    with _trava:
+        if _conversor is None:
+            return
+        logger.info("Descarregando o Docling e devolvendo a memoria dele.")
+        _conversor = None
+
+    gc.collect()
+
+
+def _agendar_descarga() -> None:
+    """Marca a hora de soltar o conversor, e adia a marca a cada pedido novo.
+
+    Mais alto que o da imagem de proposito: recarregar o Docling custa dezenas
+    de segundos, e PDF costuma vir em lote. Soltar entre dois arquivos do mesmo
+    lote seria pagar a carga duas vezes por nada.
+    """
+    global _temporizador
+
+    if CONVERSAO_OCIOSO_SEGUNDOS <= 0:
+        return
+    if _temporizador is not None:
+        _temporizador.cancel()
+
+    _temporizador = threading.Timer(CONVERSAO_OCIOSO_SEGUNDOS, descarregar)
+    # Daemon: um temporizador pendente nao pode segurar o desligamento.
+    _temporizador.daemon = True
+    _temporizador.start()
+
+
 @router.post("/parse/", dependencies=[Depends(conferir)])
 def parse(
     file: UploadFile,
@@ -144,6 +195,10 @@ def parse(
     except Exception as exc:
         logger.exception("Falha ao converter %s", file.filename)
         raise HTTPException(500, f"Falha na conversao: {exc}") from exc
+    finally:
+        # No `finally`: um PDF que falhou deixa o conversor carregado do mesmo
+        # jeito, e a memoria dele precisa ser devolvida igual.
+        _agendar_descarga()
 
     duracao = int((time.perf_counter() - inicio) * 1000)
     logger.info("Convertido %s em %sms (%s bytes)", file.filename, duracao, len(conteudo))
@@ -163,4 +218,5 @@ def estado() -> dict:
         "ocr": DOCLING_OCR,
         "threads": DOCLING_THREADS or "auto",
         "carregado": _conversor is not None,
+        "ocioso_segundos": CONVERSAO_OCIOSO_SEGUNDOS,
     }

@@ -513,3 +513,83 @@ def test_um_erro_do_nativo_sai_na_forma_da_openai(worker, cabecalhos, monkeypatc
 
     assert resposta.status_code == 404
     assert resposta.json()["error"]["message"] == 'model "x" not found'
+
+
+# ---------------------------------------------------------------------------
+# Memoria: o que o worker devolve quando para de trabalhar
+# ---------------------------------------------------------------------------
+def test_o_docling_e_descarregado_depois_de_ocioso(worker, cabecalhos, monkeypatch):
+    """Ele ficava residente PARA SEMPRE depois da primeira conversao: a rota
+    de imagem tinha o seu temporizador de descarga e esta nao tinha nada.
+
+    Sao 1 a 2 GB de memoria anonima parada — e e a anonima parada que o kernel
+    escreve no swap quando precisa de paginas, porque ela nao pode ser
+    descartada de graca como um arquivo mapeado.
+    """
+    import conversao
+
+    agendados = []
+    monkeypatch.setattr(conversao, "CONVERSAO_OCIOSO_SEGUNDOS", 900)
+    monkeypatch.setattr(
+        conversao.threading,
+        "Timer",
+        lambda segundos, funcao: (
+            agendados.append((segundos, funcao))
+            or type(
+                "Falso",
+                (),
+                {"start": lambda self: None, "cancel": lambda self: None, "daemon": True},
+            )()
+        ),
+    )
+
+    TestClient(worker.app).post(
+        "/parse/", files={"file": ("a.pdf", PDF, "application/pdf")}, headers=cabecalhos
+    )
+
+    assert agendados and agendados[0][0] == 900
+    assert agendados[0][1] is conversao.descarregar
+
+
+def test_a_descarga_e_agendada_mesmo_quando_a_conversao_falha(worker, cabecalhos, monkeypatch):
+    """Um PDF que falhou deixa o conversor carregado do mesmo jeito, e a
+    memoria dele precisa ser devolvida igual. Por isso o `finally`."""
+    import conversao
+
+    monkeypatch.setattr(
+        conversao, "obter_conversor", lambda: (_ for _ in ()).throw(RuntimeError("pdf ruim"))
+    )
+    agendados = []
+    monkeypatch.setattr(conversao, "_agendar_descarga", lambda: agendados.append(True))
+
+    resposta = TestClient(worker.app).post(
+        "/parse/", files={"file": ("a.pdf", PDF, "application/pdf")}, headers=cabecalhos
+    )
+
+    assert resposta.status_code == 500
+    assert agendados == [True]
+
+
+def test_descarregar_o_docling_e_idempotente(worker):
+    """Chamado pelo temporizador, e o temporizador pode disparar depois de uma
+    descarga manual."""
+    import conversao
+
+    conversao.descarregar()
+    conversao.descarregar()
+
+    assert conversao.estado()["carregado"] is False
+
+
+def test_com_ocioso_zero_o_docling_fica_residente(worker, monkeypatch):
+    """Era o comportamento anterior, e continua alcancavel: num acervo grande,
+    pagando dezenas de segundos de recarga, manter residente pode compensar."""
+    import conversao
+
+    monkeypatch.setattr(conversao, "CONVERSAO_OCIOSO_SEGUNDOS", 0)
+    criados = []
+    monkeypatch.setattr(conversao.threading, "Timer", lambda *a, **k: criados.append(True))
+
+    conversao._agendar_descarga()
+
+    assert criados == []

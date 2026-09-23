@@ -123,6 +123,28 @@ else
     mkdir -p "$(dirname "$DESTINO")"
 fi
 
+# Limites de memoria, do `.env`. Eles moram na unit e nao dao para vir por
+# `${}`: o systemd nao expande variaveis de ambiente em `MemoryMax=`. Entao o
+# instalador os substitui aqui, e o `.env` continua sendo o unico lugar que se
+# edita.
+#
+# A ULTIMA ocorrencia vence, como o systemd faz com EnvironmentFile — um `.env`
+# com a chave repetida (`cat >> .env`) tem que valer o mesmo nas duas leituras.
+_do_env() {
+    grep -E "^${1}=" "$RAIZ/.env" 2>/dev/null | tail -1 | cut -d= -f2- |
+        tr -d '"'"'"' \t\r' || true
+}
+
+MEMORIA_FREIO="$(_do_env WORKER_MEMORY_HIGH)"
+MEMORIA_PAREDE="$(_do_env WORKER_MEMORY_MAX)"
+MEMORIA_FREIO="${MEMORIA_FREIO:-10G}"
+MEMORIA_PAREDE="${MEMORIA_PAREDE:-14G}"
+
+echo "==> Limites de memoria: freio $MEMORIA_FREIO, parede $MEMORIA_PAREDE"
+echo "    (WORKER_MEMORY_HIGH / WORKER_MEMORY_MAX no .env)"
+echo "    Acima do freio o kernel aperta; acima da parede ele mata, e o"
+echo "    Restart=always sobe de novo em 10s. Veja 'Convivendo com a maquina'."
+
 echo "==> Gerando a unit ($ESCOPO)"
 TEMPORARIO="$(mktemp)"
 trap 'rm -f "$TEMPORARIO"' EXIT
@@ -132,6 +154,8 @@ trap 'rm -f "$TEMPORARIO"' EXIT
 sed -e "s|RAIZ|$RAIZ|g" \
     -e "s|LINHA_DE_USUARIO|$LINHA_DE_USUARIO|" \
     -e "s|ALVO_DE_INSTALACAO|$ALVO|" \
+    -e "s|MEMORIA_FREIO|$MEMORIA_FREIO|" \
+    -e "s|MEMORIA_PAREDE|$MEMORIA_PAREDE|" \
     "$RAIZ/deploy/worker-gpu.service" > "$TEMPORARIO"
 
 "${INSTALAR[@]}" "$TEMPORARIO" "$DESTINO"
