@@ -1,0 +1,4 @@
+# Tudo em LF, qualquer que seja o `core.autocrlf` de quem clona. Com CRLF o
+# shebang vira `bash\r` e o `instalar.sh` nem comeca; e o systemd le o `\r`
+# como parte do valor nas units e no `.env`.
+* text=auto eol=lf

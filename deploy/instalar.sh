@@ -42,6 +42,15 @@ if [[ ! -f "$RAIZ/.env" ]]; then
     exit 1
 fi
 
+# Um `.env` com CRLF (copiado de um `.env.example` que o git converteu, ou
+# salvo por um editor do Windows) poe um `\r` no fim de cada valor. O systemd
+# nao o tira: o uvicorn recebe `--port "8090\r"` e morre no boot.
+if grep -q $'\r' "$RAIZ/.env"; then
+    echo "ERRO: $RAIZ/.env tem fim de linha CRLF (Windows)." >&2
+    echo "  sed -i 's/\\r\$//' $RAIZ/.env" >&2
+    exit 1
+fi
+
 # Lido aqui, e nao no fim: as conferencias abaixo precisam dos valores, e
 # conferir depois de instalar a unit ja e tarde.
 set -a; source <(grep -E '^[A-Z_]+=' "$RAIZ/.env"); set +a
