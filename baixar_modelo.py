@@ -2,7 +2,7 @@
 
 Existe por um defeito de experiencia, nao de codigo. O worker carrega o
 modelo de forma preguicosa, no primeiro pedido — e o primeiro pedido de todos
-nao carrega: **baixa**, cerca de 7 GB. Quem clica em "gerar tres opcoes de
+nao carrega: **baixa** varios GB (7 no SDXL, ~20 no Z-Image). Quem clica em "gerar tres opcoes de
 capa" na tela de revisao fica olhando o navegador girar por varios minutos,
 sem nada no terminal do `manage.py dev` (o servico e uma unit do systemd: o
 log dele esta no journal), e no fim leva um erro de tempo esgotado.
@@ -16,7 +16,7 @@ Depois disso o primeiro pedido so LE do disco — dezenas de segundos, nao
 minutos. Ele respeita o `IMAGEM_MODELO` do `.env`, entao trocar de modelo e
 trocar a variavel e rodar isto de novo.
 
-Nao carrega nada na GPU: so popula o cache do HuggingFace.
+Nao carrega o modelo, nem na GPU nem na RAM: so popula o cache do HuggingFace.
 """
 
 from __future__ import annotations
@@ -64,39 +64,46 @@ def main() -> int:
     _do_env()
 
     modelo = os.environ.get("IMAGEM_MODELO", "stabilityai/stable-diffusion-xl-base-1.0")
+    precisao = os.environ.get("IMAGEM_DTYPE", "float16").strip().lower()
+    vae = os.environ.get("IMAGEM_VAE", "").strip()
     print(f"Baixando {modelo} ...")
     print("Sao alguns GB. Da para interromper e retomar: o download e incremental.")
 
     try:
-        import torch
-        from diffusers import AutoPipelineForText2Image
+        from diffusers import AutoencoderKL, DiffusionPipeline
     except ImportError as erro:
         print(f"ERRO: {erro}", file=sys.stderr)
         print("  ./venv/bin/pip install -r requirements.txt", file=sys.stderr)
         return 1
 
     inicio = time.perf_counter()
-    try:
-        # Carrega para a RAM e descarta. Nao ha forma de "so baixar" que
-        # garanta que o conjunto de arquivos e o mesmo que o pipeline pede:
-        # a variante fp16, o tokenizer e o VAE sao escolhidos por esta chamada.
-        AutoPipelineForText2Image.from_pretrained(
-            modelo,
-            torch_dtype=torch.float16,
-            variant="fp16",
-            use_safetensors=True,
-        )
-    except Exception:
-        # Mesmo recurso do servico: nem todo repositorio publica a variante
-        # fp16. Sem esta segunda tentativa, um modelo valido pareceria
-        # inexistente.
-        print("Sem variante fp16; baixando os pesos completos.")
+    # `download` e nao `from_pretrained`: escolhe os MESMOS arquivos que o
+    # pipeline pediria (variante, formato, componentes), sem carregar nada.
+    # Carregar para descartar custava a RAM do modelo inteiro — no Z-Image em
+    # float32, a tentativa sem variante, mais de 40 GB.
+    #
+    # A variante `fp16` so existe a parte nos repositorios SDXL, e o servico
+    # so a pede em float16; em bfloat16 ele carrega o ramo principal.
+    variantes = ["fp16", None] if precisao == "float16" else [None]
+    for variante in variantes:
         try:
-            AutoPipelineForText2Image.from_pretrained(
-                modelo, torch_dtype=torch.float32, use_safetensors=True
-            )
+            DiffusionPipeline.download(modelo, variant=variante, use_safetensors=True)
+            break
         except Exception as erro:
-            print(f"ERRO ao baixar {modelo}: {erro}", file=sys.stderr)
+            if variante is None:
+                print(f"ERRO ao baixar {modelo}: {erro}", file=sys.stderr)
+                return 1
+            # Nem todo repositorio publica a variante fp16.
+            print("Sem variante fp16; baixando os pesos completos.")
+
+    if vae:
+        print(f"Baixando o VAE {vae} ...")
+        try:
+            # Pequeno (~300 MB): carregar aqui nao pesa, e garante os arquivos
+            # que o servico vai pedir.
+            AutoencoderKL.from_pretrained(vae)
+        except Exception as erro:
+            print(f"ERRO ao baixar o VAE {vae}: {erro}", file=sys.stderr)
             return 1
 
     print(f"Pronto em {time.perf_counter() - inicio:.0f}s. O cache esta em ~/.cache/huggingface.")

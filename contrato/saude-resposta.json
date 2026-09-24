@@ -38,7 +38,7 @@
       }
     ]
   },
-  "_nota_grade": "`grade` sao as proporcoes em que o SDXL foi treinado, todas em torno de 1,05 MP. A lista real tem ~40 entradas; o exemplo mostra tres. Validar contra ELA, e nao contra uma copia no cliente. Tamanho fora da grade NAO e recusado (1200x632 passa), so avisado no journal — mas cada lado precisa ser multiplo de 8, entao o 1200x630 do `og:image` volta 422.",
+  "_nota_grade": "`grade` sao as proporcoes em que o SDXL foi treinado, todas em torno de 1,05 MP. A lista real tem ~40 entradas; o exemplo mostra tres. Validar contra ELA, e nao contra uma copia no cliente. Tamanho fora da grade NAO e recusado (1200x640 passa), so avisado no journal — mas cada lado precisa ser multiplo de 16, entao o 1200x630 do `og:image` volta 422.",
   "_nota_imagem": "`vae` e `amostrador` trazem \"(o do modelo)\" quando nao foram ajustados. Para um modelo da familia SDXL, `vae: \"(o do modelo)\"` e um defeito silencioso: o VAE do SDXL estoura em float16 e produz manchas e faixas de cor. O worker avisa no journal quando detecta isso.",
   "imagem": {
     "modelo": "stabilityai/stable-diffusion-xl-base-1.0",
@@ -50,6 +50,8 @@
     "guidance": 6.0,
     "vae": "madebyollin/sdxl-vae-fp16-fix",
     "amostrador": "dpm++2m_karras",
+    "precisao": "float16",
+    "quantizacao": "nao",
     "lado_maximo": 1536,
     "area_maxima_mp": 1.2,
     "grade": ["1024x1024", "1344x768", "1536x640"],

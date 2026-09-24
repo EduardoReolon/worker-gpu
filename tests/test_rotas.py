@@ -171,17 +171,18 @@ def test_imagem_devolve_b64_no_formato_da_openai(cliente, cabecalhos):
     assert base64.b64decode(corpo["data"][0]["b64_json"]) == b"png-0-1024x576"
 
 
-def test_lado_que_nao_e_multiplo_de_oito_e_recusado(cliente, cabecalhos):
-    """Nao falharia: o modelo arredonda por dentro e devolve uma imagem de
-    tamanho diferente do pedido, sem avisar."""
+def test_lado_que_nao_e_multiplo_de_dezesseis_e_recusado(cliente, cabecalhos):
+    """16 e nao 8: os modelos de transformer agrupam o latente em blocos de
+    2x2, e 1352 (multiplo de 8) passaria aqui para o pipeline recusar la
+    dentro, com um 500."""
     resposta = cliente.post(
         "/v1/images/generations",
-        json={"prompt": "x", "size": "1000x1001"},
+        json={"prompt": "x", "size": "1352x760"},
         headers=cabecalhos,
     )
 
     assert resposta.status_code == 422
-    assert "multiplo de 8" in resposta.json()["detail"]
+    assert "multiplo de 16" in resposta.json()["detail"]
 
 
 def test_pedido_maior_que_o_teto_e_aparado(cliente, cabecalhos):

@@ -35,10 +35,18 @@ opencv-python-headless>=4.6.0.66,<5
 # dele o `enable_model_cpu_offload()`, que mantem os pesos na RAM e sobe para
 # a placa so o submodulo em uso. Sem ele o pipeline inteiro vai para a VRAM e
 # uma placa de 8 GB nao comporta difusao ao lado de um modelo de texto.
-diffusers>=0.35,<0.42
+# 0.36 e a primeira com o Z-Image (`ZImagePipeline`).
+diffusers>=0.36,<0.42
 accelerate>=1.0,<2
 safetensors>=0.4,<1
 
 # `transformers` NAO e fixado de proposito: o docling e o diffusers pedem
 # faixas proprias, e uma versao cravada aqui passaria por cima das duas — o
-# sintoma seria um ImportError dentro de um dos dois, longe daqui.
+# sintoma seria um ImportError dentro de um dos dois, longe daqui. So o piso:
+# o codificador de texto do Z-Image e um Qwen3, que chegou na 4.51.
+transformers>=4.51
+
+# Quantizacao em 4/8 bits (`IMAGEM_QUANTIZAR`). E o que faz um modelo de 6B,
+# como o Z-Image-Turbo, caber numa placa de 8 GB. 0.48: antes dela o 8 bits
+# nao sai da placa, e o `enable_model_cpu_offload` o pula.
+bitsandbytes>=0.48

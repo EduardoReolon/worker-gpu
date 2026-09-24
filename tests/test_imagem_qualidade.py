@@ -40,21 +40,39 @@ def diffusers_falso(monkeypatch):
 # ---------------------------------------------------------------------------
 # A lingua dos prompts
 # ---------------------------------------------------------------------------
-def test_o_prompt_negativo_padrao_esta_em_ingles(imagem_mod):
-    """Esteve em portugues por muito tempo e nao fazia nada: os codificadores
-    de texto do SDXL foram treinados em legendas da web, esmagadoramente
-    inglesas. `borrado` nao esta no vocabulario aprendido; `blurry` esta.
+def test_o_worker_nao_tem_prompt_negativo_proprio(imagem_mod):
+    """Houve um padrao ("text, letters, words, ...") aplicado a todo pedido, e
+    ele brigava com quem pedia texto na imagem: uma planilha com linhas
+    rotuladas saia como sopa de letras. O worker executa; o negativo e do
+    cliente."""
+    assert not hasattr(imagem_mod, "IMAGEM_NEGATIVO")
+    assert imagem_mod.PedidoDeImagem(prompt="x").negative_prompt is None
 
-    Era o pior tipo de configuracao — aparecia no `.env`, parecia ativa, e o
-    efeito era o de nao ter prompt negativo nenhum.
-    """
-    negativo = imagem_mod.IMAGEM_NEGATIVO.lower()
 
-    assert "blurry" in negativo
-    assert "watermark" in negativo
-    # As palavras portuguesas que estavam ali antes.
-    assert "borrado" not in negativo
-    assert "marca d'agua" not in negativo
+def test_o_negativo_do_cliente_chega_ao_pipeline_como_veio(imagem_mod, monkeypatch):
+    import sys
+    import types
+
+    visto = {}
+
+    class _Resultado:
+        images = ()
+
+    def pipe(**argumentos):
+        visto.update(argumentos)
+        return _Resultado()
+
+    torch_falso = types.ModuleType("torch")
+    torch_falso.Generator = lambda device: None
+    monkeypatch.setitem(sys.modules, "torch", torch_falso)
+    monkeypatch.setattr(imagem_mod, "_obter_pipeline", lambda dispositivo: pipe)
+
+    pedido = imagem_mod.PedidoDeImagem(prompt="x", negative_prompt="blurry, watermark")
+    imagem_mod.gerar_imagens("cpu", pedido, 1, 1024, 1024)
+    assert visto["negative_prompt"] == "blurry, watermark"
+
+    imagem_mod.gerar_imagens("cpu", imagem_mod.PedidoDeImagem(prompt="x"), 1, 1024, 1024)
+    assert visto["negative_prompt"] is None
 
 
 def test_um_prompt_em_portugues_gera_aviso(imagem_mod, caplog):
@@ -66,6 +84,20 @@ def test_um_prompt_em_portugues_gera_aviso(imagem_mod, caplog):
         )
 
     assert "portugues" in caplog.text
+
+
+def test_o_aviso_de_portugues_e_so_do_sdxl(imagem_mod, caplog, monkeypatch):
+    """O aviso e sobre os CLIP do SDXL. O Z-Image le o prompt com um modelo de
+    linguagem que entende portugues; avisar ali mandaria mudar o que esta
+    certo."""
+    monkeypatch.setattr(imagem_mod, "_familia_do_pipeline", "outra")
+
+    with caplog.at_level(logging.WARNING, logger="worker-gpu.imagem"):
+        imagem_mod._avisar_de_prompt_em_portugues(
+            "uma fotografia de um laboratorio com luz natural"
+        )
+
+    assert caplog.text == ""
 
 
 def test_um_prompt_em_ingles_nao_gera_aviso(imagem_mod, caplog):
@@ -192,6 +224,22 @@ def test_o_amostrador_herda_a_configuracao_do_modelo(imagem_mod, diffusers_falso
     assert visto["extras"] == {"use_karras_sigmas": True}
 
 
+def test_um_amostrador_classico_num_modelo_de_flow_matching_recusa(imagem_mod):
+    """Z-Image, FLUX e SD 3.5 usam flow matching. O `from_config` de um DPM++
+    ali nao reclama — gera ruido. O `.env` herdado do SDXL traz
+    `IMAGEM_SCHEDULER=dpm++2m_karras`, entao e o primeiro erro de quem troca de
+    modelo."""
+
+    class FlowMatchEulerDiscreteScheduler:
+        pass
+
+    pipe = _PipeFalso()
+    pipe.scheduler = FlowMatchEulerDiscreteScheduler()
+
+    with pytest.raises(RuntimeError, match="IMAGEM_SCHEDULER vazio"):
+        imagem_mod.aplicar_scheduler(pipe, "dpm++2m_karras")
+
+
 def test_um_amostrador_vazio_mantem_o_do_modelo(imagem_mod):
     pipe = _PipeFalso()
     original = pipe.scheduler
@@ -295,10 +343,10 @@ def test_um_tamanho_fora_da_grade_avisa_mas_nao_recusa(imagem_mod, caplog, monke
     monkeypatch.setattr(imagem_mod, "_familia_do_pipeline", "sdxl")
 
     # Nao levanta.
-    assert imagem_mod._medidas("1200x632") == (1200, 632)
+    assert imagem_mod._medidas("1200x640") == (1200, 640)
 
     with caplog.at_level(logging.WARNING, logger="worker-gpu.imagem"):
-        imagem_mod._avisar_de_tamanho_fora_da_grade(1200, 632)
+        imagem_mod._avisar_de_tamanho_fora_da_grade(1200, 640)
 
     assert "fora da grade" in caplog.text
     assert "1344x704" in caplog.text
@@ -306,12 +354,12 @@ def test_um_tamanho_fora_da_grade_avisa_mas_nao_recusa(imagem_mod, caplog, monke
 
 def test_o_og_image_classico_nem_chega_na_grade(imagem_mod):
     """1200x630, o tamanho que as redes sociais pedem para `og:image`, e
-    recusado ANTES da grade: 630 nao e multiplo de 8. A recusa e certa — o
+    recusado ANTES da grade: 630 nao e multiplo de 16. A recusa e certa — o
     modelo arredondaria por dentro e devolveria outro tamanho, sem avisar —,
     mas quem integra precisa saber que esse valor exato nao passa."""
     from fastapi import HTTPException
 
-    with pytest.raises(HTTPException, match="multiplo de 8"):
+    with pytest.raises(HTTPException, match="multiplo de 16"):
         imagem_mod._medidas("1200x630")
 
 
@@ -346,3 +394,34 @@ def test_o_health_publica_a_grade(worker):
     assert "1344x768" in bloco["grade"]
     assert "1536x640" in bloco["grade"]
     assert bloco["area_maxima_mp"] >= 1.05
+
+
+# ---------------------------------------------------------------------------
+# Precisao e quantizacao
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    ("chave", "valor", "trecho"),
+    [
+        ("IMAGEM_DTYPE", "fp16", "float16 ou bfloat16"),
+        ("IMAGEM_QUANTIZAR", "4bits", "nao, 4bit ou 8bit"),
+    ],
+)
+def test_valores_invalidos_recusam_na_subida(imagem_mod, monkeypatch, chave, valor, trecho):
+    monkeypatch.setattr(imagem_mod, chave, valor)
+
+    with pytest.raises(RuntimeError, match=trecho):
+        imagem_mod.conferir_configuracao()
+
+
+def test_quantizar_sem_bitsandbytes_recusa_na_subida(imagem_mod, monkeypatch):
+    """O modelo carrega no primeiro pedido. Sem esta conferencia, o
+    `bitsandbytes` ausente so apareceria ali, como 500 numa imagem."""
+    monkeypatch.setattr(imagem_mod, "IMAGEM_QUANTIZAR", "4bit")
+    monkeypatch.setattr(imagem_mod.importlib.util, "find_spec", lambda nome: None)
+
+    with pytest.raises(RuntimeError, match="pip install bitsandbytes"):
+        imagem_mod.conferir_configuracao()
+
+
+def test_o_padrao_sobe(imagem_mod):
+    imagem_mod.conferir_configuracao()

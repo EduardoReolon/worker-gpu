@@ -355,7 +355,6 @@ def main() -> int:
                     try:
                         resultado = pipe(
                             prompt=prompt,
-                            negative_prompt=imagem.IMAGEM_NEGATIVO or None,
                             num_inference_steps=passos,
                             guidance_scale=guidance,
                             width=largura,
@@ -402,7 +401,6 @@ def main() -> int:
         json.dumps(
             {
                 "prompts": {f"cena{i + 1}": prompt for i, prompt in enumerate(prompts)},
-                "negativo": imagem.IMAGEM_NEGATIVO,
                 "sementes": sementes,
                 "variantes": [
                     {

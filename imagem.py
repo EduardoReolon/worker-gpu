@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import base64
 import gc
+import importlib.util
 import io
 import logging
 import os
@@ -44,14 +45,16 @@ from arbitro import ARBITRO, GpuOcupada
 from config import (
     IMAGEM_AREA_MAXIMA_MP,
     IMAGEM_DEVICE,
+    IMAGEM_DTYPE,
     IMAGEM_GUIDANCE,
     IMAGEM_LADO_MAXIMO,
     IMAGEM_MAXIMO,
     IMAGEM_MODELO,
-    IMAGEM_NEGATIVO,
     IMAGEM_OCIOSO_SEGUNDOS,
     IMAGEM_PASSOS,
     IMAGEM_PERMITIR_CPU,
+    IMAGEM_QUANTIZAR,
+    IMAGEM_QUANTIZAR_COMPONENTES,
     IMAGEM_SCHEDULER,
     IMAGEM_TEMPO_MAXIMO,
     IMAGEM_VAE,
@@ -162,6 +165,11 @@ class PedidoDeImagem(BaseModel):
     # expiraria antes da publicacao e viraria imagem quebrada no site.
     response_format: str = "b64_json"
     seed: int | None = Field(default=None)
+    # Repassado como veio, e so quando veio. O worker nao tem negativo proprio:
+    # um padrao aplicado a todo pedido brigava com quem pedia texto na imagem.
+    # Modelos destilados (Z-Image-Turbo, FLUX schnell) rodam com guidance 0 e
+    # ignoram o negativo.
+    negative_prompt: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -187,6 +195,23 @@ def resolver_dispositivo() -> str:
         return "cpu"
 
     return "cuda" if tem_placa else "cpu"
+
+
+def conferir_configuracao() -> None:
+    """Recusa subir com precisao ou quantizacao invalidas.
+
+    Na subida, e nao no primeiro pedido: o modelo carrega preguicosamente, e um
+    `bitsandbytes` ausente so apareceria como 500 na primeira imagem.
+    """
+    if IMAGEM_DTYPE not in ("float16", "bfloat16"):
+        raise RuntimeError(f"IMAGEM_DTYPE={IMAGEM_DTYPE!r}. Use float16 ou bfloat16.")
+    if IMAGEM_QUANTIZAR not in ("nao", "4bit", "8bit"):
+        raise RuntimeError(f"IMAGEM_QUANTIZAR={IMAGEM_QUANTIZAR!r}. Use nao, 4bit ou 8bit.")
+    if IMAGEM_QUANTIZAR != "nao" and importlib.util.find_spec("bitsandbytes") is None:
+        raise RuntimeError(
+            f"IMAGEM_QUANTIZAR={IMAGEM_QUANTIZAR}, mas o bitsandbytes nao esta instalado.\n"
+            f"  ./venv/bin/pip install bitsandbytes"
+        )
 
 
 def modelo_esta_no_disco() -> bool:
@@ -231,6 +256,17 @@ def aplicar_scheduler(pipe, nome: str):
     if nome not in SCHEDULERS:
         raise RuntimeError(
             f"IMAGEM_SCHEDULER={nome!r} nao existe. Use um de: {', '.join(sorted(SCHEDULERS))}"
+        )
+
+    atual = type(pipe.scheduler).__name__
+    if "FlowMatch" in atual:
+        # Os amostradores da lista sao de difusao classica (SDXL, SD 1.5). Num
+        # modelo de "flow matching" (Z-Image, FLUX, SD 3.5) o `from_config`
+        # nao reclama — ele gera ruido. Recusar e o unico jeito de nao sair
+        # imagem estragada sem erro.
+        raise RuntimeError(
+            f"IMAGEM_SCHEDULER={nome!r} nao serve a este modelo, que usa {atual}. "
+            f"Deixe IMAGEM_SCHEDULER vazio no .env."
         )
 
     import diffusers
@@ -305,20 +341,43 @@ def _montar_pipeline(dispositivo: str, modelo: str = "", vae: str = "", schedule
     scheduler = scheduler if scheduler != "" else IMAGEM_SCHEDULER
 
     meia = dispositivo == "cuda"
+    precisao = getattr(torch, IMAGEM_DTYPE) if meia else torch.float32
     argumentos = {
-        "torch_dtype": torch.float16 if meia else torch.float32,
+        "torch_dtype": precisao,
         "use_safetensors": True,
     }
-    if meia:
+    if meia and IMAGEM_DTYPE == "float16":
+        # So em float16: e a unica variante que os repositorios SDXL publicam
+        # a parte. Um modelo em bfloat16 ja vem assim no ramo principal.
         argumentos["variant"] = "fp16"
+
+    if meia and IMAGEM_QUANTIZAR != "nao":
+        from diffusers.quantizers import PipelineQuantizationConfig
+
+        if IMAGEM_QUANTIZAR == "4bit":
+            backend = "bitsandbytes_4bit"
+            extras = {
+                "load_in_4bit": True,
+                "bnb_4bit_quant_type": "nf4",
+                "bnb_4bit_compute_dtype": precisao,
+            }
+        else:
+            backend, extras = "bitsandbytes_8bit", {"load_in_8bit": True}
+
+        logger.info(
+            "Quantizando %s em %s.", ", ".join(IMAGEM_QUANTIZAR_COMPONENTES), IMAGEM_QUANTIZAR
+        )
+        argumentos["quantization_config"] = PipelineQuantizationConfig(
+            quant_backend=backend,
+            quant_kwargs=extras,
+            components_to_quantize=IMAGEM_QUANTIZAR_COMPONENTES,
+        )
 
     if vae:
         from diffusers import AutoencoderKL
 
         logger.info("VAE alternativo: %s", vae)
-        argumentos["vae"] = AutoencoderKL.from_pretrained(
-            vae, torch_dtype=torch.float16 if meia else torch.float32
-        )
+        argumentos["vae"] = AutoencoderKL.from_pretrained(vae, torch_dtype=precisao)
 
     logger.info("Carregando %s em %s...", modelo, dispositivo)
     inicio = time.perf_counter()
@@ -436,11 +495,12 @@ def _medidas(tamanho: str) -> tuple[int, int]:
         )
 
     for medida in (largura, altura):
-        if medida <= 0 or medida % 8:
-            # Os modelos de difusao trabalham num espaco latente 8x menor. Um
-            # lado que nao e multiplo de 8 nao falha: ele e arredondado por
-            # dentro, e a imagem volta com tamanho diferente do pedido.
-            raise HTTPException(422, f"size {tamanho!r}: cada lado precisa ser multiplo de 8.")
+        if medida <= 0 or medida % 16:
+            # 16, e nao 8: o espaco latente e 8x menor, e os modelos de
+            # transformer (Z-Image, FLUX, SD 3.5) ainda o agrupam em blocos de
+            # 2x2. Com 8, um lado como 1352 passava aqui e o pipeline recusava
+            # la dentro, com um 500. Toda a grade do SDXL e multipla de 64.
+            raise HTTPException(422, f"size {tamanho!r}: cada lado precisa ser multiplo de 16.")
         if medida > IMAGEM_LADO_MAXIMO:
             raise HTTPException(
                 422,
@@ -580,6 +640,11 @@ def _avisar_de_prompt_em_portugues(prompt: str) -> None:
     integra decide — foi este aviso que revelou que o prompt NEGATIVO deste
     servico estava em portugues desde o inicio, sem efeito nenhum.
     """
+    if _familia_do_pipeline == "outra":
+        # O aviso e sobre os CLIP do SDXL. O Z-Image, por exemplo, le o prompt
+        # com um modelo de linguagem (Qwen3) que entende portugues.
+        return
+
     baixo = f" {prompt.lower()} "
     pistas = [pista.strip() for pista in _PISTAS_DE_PORTUGUES if pista in baixo]
 
@@ -612,7 +677,7 @@ def gerar_imagens(
 
     saida = pipe(
         prompt=pedido.prompt,
-        negative_prompt=IMAGEM_NEGATIVO or None,
+        negative_prompt=pedido.negative_prompt or None,
         num_images_per_prompt=quantas,
         num_inference_steps=IMAGEM_PASSOS,
         guidance_scale=IMAGEM_GUIDANCE,
@@ -688,6 +753,8 @@ def estado() -> dict:
         # avisa na carga; publicado, da para conferir de fora, sem journal.
         "vae": IMAGEM_VAE or "(o do modelo)",
         "amostrador": IMAGEM_SCHEDULER or "(o do modelo)",
+        "precisao": IMAGEM_DTYPE,
+        "quantizacao": IMAGEM_QUANTIZAR,
         "lado_maximo": IMAGEM_LADO_MAXIMO,
         "area_maxima_mp": IMAGEM_AREA_MAXIMA_MP,
         # A grade de proporcoes do SDXL, publicada para o cliente validar

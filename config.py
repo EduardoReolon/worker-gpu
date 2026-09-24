@@ -121,24 +121,35 @@ IMAGEM_DEVICE = os.environ.get("IMAGEM_DEVICE", "auto").lower()
 IMAGEM_PASSOS = _inteiro("IMAGEM_PASSOS", 30)
 IMAGEM_GUIDANCE = _decimal("IMAGEM_GUIDANCE", 6.0)
 
-# O prompt negativo, em INGLES — e a lingua e o ponto, nao um descuido.
+# Nao ha prompt negativo aqui, e a ausencia e deliberada. Houve um padrao
+# ("text, letters, words, watermark, ...") aplicado a TODO pedido, e ele
+# brigava com quem pedia justamente texto — uma planilha com linhas rotuladas
+# saia como sopa de letras. O worker executa; quem sabe o que a imagem precisa
+# e o cliente, e ele manda `negative_prompt` no pedido quando quiser um.
+
+
+# Precisao dos pesos na placa: `float16` ou `bfloat16`. Em CPU e sempre
+# float32.
 #
-# Ele esteve em portugues aqui por muito tempo ("texto, letras, marca d'agua,
-# baixa qualidade, borrado, deformado") e nao fazia praticamente nada. Os
-# codificadores de texto do SDXL sao o CLIP ViT-L e o OpenCLIP ViT-bigG,
-# treinados em legendas de imagem da web, que sao esmagadoramente em ingles.
-# "borrado" nao esta no vocabulario aprendido; "blurry" esta.
+# float16 e o do SDXL (com o VAE ajustado, `IMAGEM_VAE`). Os modelos novos
+# (Z-Image, FLUX, SD 3.5) sao publicados e treinados em bfloat16, e em float16
+# alguns estouram — imagem preta ou ruido, sem erro. A RTX 30xx tem bfloat16.
+IMAGEM_DTYPE = os.environ.get("IMAGEM_DTYPE", "float16").strip().lower()
+
+# Quantizar os pesos ao carregar, com bitsandbytes: `nao`, `4bit` ou `8bit`.
+# So vale em GPU.
 #
-# Era o pior tipo de configuracao: aparecia no `.env`, parecia ativa, e o
-# resultado era o de nao ter prompt negativo nenhum. O MESMO vale para o
-# prompt POSITIVO, que vem do cliente — veja o aviso em `imagem.py`.
-IMAGEM_NEGATIVO = os.environ.get(
-    "IMAGEM_NEGATIVO",
-    "text, letters, words, watermark, logo, signature, frame, border, "
-    "low quality, blurry, out of focus, jpeg artifacts, deformed, disfigured, "
-    "extra fingers, mutated hands, bad anatomy, plastic skin, oversaturated, "
-    "cartoon, illustration, 3d render, cgi",
-)
+# E o que faz um modelo de 6B caber numa placa de 8 GB: o Z-Image-Turbo em
+# bfloat16 sao ~20 GB (transformer 12 + codificador de texto 8); em 4 bits,
+# ~7 GB de RAM e ~5 GB de pico na placa. A perda de qualidade em 4 bits (NF4)
+# e pequena perto do salto de modelo. Precisa de `pip install bitsandbytes`.
+IMAGEM_QUANTIZAR = os.environ.get("IMAGEM_QUANTIZAR", "nao").strip().lower()
+
+# Quais componentes do pipeline quantizar. Os nomes sao os do `model_index.json`
+# do modelo; o padrao serve ao Z-Image e ao FLUX (no FLUX o T5 e
+# `text_encoder_2`). O VAE fica de fora: e pequeno e sensivel.
+_COMPONENTES = os.environ.get("IMAGEM_QUANTIZAR_COMPONENTES", "transformer,text_encoder")
+IMAGEM_QUANTIZAR_COMPONENTES = [nome.strip() for nome in _COMPONENTES.split(",") if nome.strip()]
 
 # VAE alternativo, por nome de repositorio no HuggingFace. Vazio = o do modelo.
 #

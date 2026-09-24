@@ -71,6 +71,9 @@ app = FastAPI(title="worker-gpu", version=CONTRATO_VERSAO)
 app.include_router(texto.router)
 
 if IMAGEM_ATIVA:
+    # Na subida: o modelo carrega no primeiro pedido, e um `bitsandbytes`
+    # ausente so apareceria ali, como 500.
+    imagem.conferir_configuracao()
     app.include_router(imagem.router)
 
 if CONVERSAO_ATIVA:

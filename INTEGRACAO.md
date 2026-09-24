@@ -445,15 +445,22 @@ cliente termina de ler.
 POST /v1/images/generations
 Authorization: Bearer <segredo>
 
-{"prompt": "...", "n": 3, "size": "1024x576"}
+{"prompt": "...", "n": 3, "size": "1344x768",
+ "negative_prompt": "blurry, watermark"}
 ```
 
 Resposta: `contrato/imagem-resposta.json`. Sempre `b64_json` — um link
 temporário expiraria antes de você publicar a imagem.
 
-Cada lado do `size` precisa ser múltiplo de 8. Não é capricho: o modelo
-arredonda por dentro e devolveria uma imagem de tamanho diferente do pedido,
-sem avisar.
+`negative_prompt` é **opcional e seu**: o worker não tem negativo próprio e
+repassa o que você mandar, como veio. Ele já teve um padrão aplicado a todo
+pedido ("text, letters, words, ..."), e isso brigava com quem pedia texto na
+imagem. Modelos destilados (Z-Image-Turbo, FLUX schnell) rodam com guidance 0
+e ignoram o negativo — veja `imagem.modelo` e `imagem.guidance` no `/health/`.
+
+Cada lado do `size` precisa ser múltiplo de 16. Não é capricho: o espaço
+latente é 8× menor, e os modelos de transformer ainda o agrupam em blocos de
+2×2. Toda a grade do SDXL abaixo já é múltipla de 64.
 
 O tamanho quase não muda o tempo (veja o README): o custo é dominado por mover
 pesos entre RAM e VRAM. Peça o tamanho que você quer publicar.
@@ -482,8 +489,8 @@ uma cópia envelhece e ninguém percebe.
 
 Três limites, e eles não são o mesmo:
 
-- **cada lado múltiplo de 8** → senão `422`. É por isso que o `1200x630`
-  clássico de `og:image` **não passa**: 630 não é múltiplo de 8. Use `1344x704`;
+- **cada lado múltiplo de 16** → senão `422`. É por isso que o `1200x630`
+  clássico de `og:image` **não passa**: 630 não é múltiplo de 16. Use `1344x704`;
 - **lado ≤ 1536** (`imagem.lado_maximo`) → senão `422`;
 - **área ≤ 1,2 MP** (`imagem.area_maxima_mp`) → senão `422`, com o tamanho da
   grade mais próximo na mensagem. Existe porque o teto por lado sozinho
