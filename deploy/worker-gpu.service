@@ -17,6 +17,18 @@ Description=worker-gpu — arbitro de GPU (texto, imagem, conversao)
 After=network-online.target ollama.service
 Wants=network-online.target
 
+# Aviso na tela quando ele cai. Liga com `WORKER_AVISO_QUEDA=sim` no `.env`:
+# o `instalar.sh` copia o `worker-gpu-aviso.service` e troca o marcador abaixo
+# por `OnFailure=`. Nao descomente nada aqui — este molde e versionado.
+#
+# Mora em `[Unit]`, e nao em `[Service]`: la o systemd ignora a chave com so
+# um aviso no journal, e o aviso de queda nunca dispararia.
+#
+# Vale ligar justamente porque a morte por memoria e SILENCIOSA: o
+# `Restart=always` abaixo traz o worker de volta em 10s, entao um worker
+# morrendo em laco parece um worker funcionando devagar.
+LINHA_DE_AVISO
+
 [Service]
 Type=simple
 LINHA_DE_USUARIO
@@ -36,14 +48,6 @@ ExecStart=RAIZ/venv/bin/uvicorn app:app \
 # acharia a GPU livre.
 Restart=always
 RestartSec=10
-
-# Aviso na tela quando ele cai. Descomente para ligar, depois de copiar o
-# `worker-gpu-aviso.service` para o mesmo lugar que esta unit.
-#
-# Vale ligar justamente porque a morte por memoria e SILENCIOSA: o
-# `Restart=always` acima traz o worker de volta em 10s, entao um worker
-# morrendo em laco parece um worker funcionando devagar.
-# OnFailure=worker-gpu-aviso.service
 
 # Curto de proposito. O laco de difusao nao olha para sinal, entao um
 # `systemctl restart` fica em `deactivating (stop-sigterm)` ate este prazo.

@@ -1,11 +1,17 @@
-# Aviso na tela quando o worker morre. Instale a mao, so se voce quiser.
+# Aviso na tela quando o worker morre. Opcional, e so na unit de usuario.
 #
-#   cp deploy/worker-gpu-aviso.service ~/.config/systemd/user/
-#   systemctl --user daemon-reload
+#   WORKER_AVISO_QUEDA=sim      no .env
+#   ./deploy/instalar.sh        copia esta unit e liga o `OnFailure=` do worker
 #
-# e acrescente ao `.env` ... nao: acrescente a unit do worker, porque isto e
-# systemd e nao aplicacao. Rode `./deploy/instalar.sh` depois de descomentar a
-# linha `OnFailure=` que ele ja gera comentada.
+# Nao instale a mao: o `instalar.sh` reescreve a unit do worker a cada rodada,
+# e e ele quem decide se o `OnFailure=` entra.
+#
+# Testar sem derrubar nada:   systemctl --user start worker-gpu-aviso.service
+# Testar uma queda de verdade: systemctl --user kill -s KILL worker-gpu.service
+#
+# O `OnFailure=` dispara a cada queda, mesmo com `Restart=always`, a partir do
+# systemd 254 (`systemctl --version`). Mais antigo que isso, confira com o
+# `kill` acima antes de contar com ele.
 #
 # Por que existe: o worker morre em silencio quando estoura o `MemoryMax`, e
 # `Restart=always` o traz de volta em 10s. Isso e o desenho funcionando — mas

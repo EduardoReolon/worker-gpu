@@ -410,10 +410,19 @@ A morte por memória é **silenciosa**: o `Restart=always` traz o worker de volt
 em 10 s, então um worker morrendo em laço parece um worker lento. Para saber:
 
 ```bash
-cp deploy/worker-gpu-aviso.service ~/.config/systemd/user/
-systemctl --user daemon-reload
-# e descomente a linha OnFailure= na unit do worker
+echo 'WORKER_AVISO_QUEDA=sim' >> .env
+./deploy/instalar.sh
+systemctl --user start worker-gpu-aviso.service    # a notificação deve aparecer
 ```
+
+O `instalar.sh` copia a unit do aviso e liga o `OnFailure=` do worker. Não
+edite o molde à mão: ele é versionado, e o `git pull` seguinte conflitaria.
+
+Só vale na unit de **usuário**, e só aparece com você logado na área de
+trabalho — com a máquina ligada e ninguém logado, a queda fica apenas no
+journal. Precisa do `notify-send` (`libnotify-bin` no Debian/Ubuntu). O
+`OnFailure=` dispara a cada queda, mesmo com `Restart=always`, a partir do
+systemd 254; confira a sua com `systemctl --user kill -s KILL worker-gpu`.
 
 ### Modo jogo
 

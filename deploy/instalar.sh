@@ -145,6 +145,38 @@ echo "    (WORKER_MEMORY_HIGH / WORKER_MEMORY_MAX no .env)"
 echo "    Acima do freio o kernel aperta; acima da parede ele mata, e o"
 echo "    Restart=always sobe de novo em 10s. Veja 'Convivendo com a maquina'."
 
+# Aviso de queda, tambem do `.env`. Antes ele se ligava descomentando uma linha
+# no molde — que e arquivo versionado, entao o `git pull` seguinte recusava ou
+# conflitava. A chave mora no `.env`, junto com o resto do que e desta maquina.
+AVISO="$(_do_env WORKER_AVISO_QUEDA)"
+AVISO="${AVISO:-nao}"
+LINHA_DE_AVISO="# (aviso de queda desligado: WORKER_AVISO_QUEDA=sim no .env)"
+
+if [[ "$AVISO" == "sim" ]]; then
+    # O aviso e uma notificacao na SUA sessao grafica. Uma unit de sistema roda
+    # fora dela, e o `notify-send` como root nao tem para quem mostrar — ligar
+    # assim seria um aviso que nunca aparece, que e pior que nenhum.
+    if [[ "$ESCOPO" == "sistema" ]]; then
+        echo "ERRO: WORKER_AVISO_QUEDA=sim so vale para a unit de usuario." >&2
+        echo "  Instale sem --sistema, ou ponha WORKER_AVISO_QUEDA=nao." >&2
+        exit 1
+    fi
+    if ! command -v notify-send >/dev/null 2>&1; then
+        echo "ERRO: WORKER_AVISO_QUEDA=sim, mas notify-send nao existe." >&2
+        echo "  Debian/Ubuntu: sudo apt install libnotify-bin" >&2
+        echo "  Fedora:        sudo dnf install libnotify" >&2
+        exit 1
+    fi
+    install -m 0644 "$RAIZ/deploy/worker-gpu-aviso.service" \
+        "$(dirname "$DESTINO")/worker-gpu-aviso.service"
+    LINHA_DE_AVISO="OnFailure=worker-gpu-aviso.service"
+    echo "==> Aviso de queda ligado"
+    echo "    $(dirname "$DESTINO")/worker-gpu-aviso.service"
+elif [[ "$AVISO" != "nao" ]]; then
+    echo "ERRO: WORKER_AVISO_QUEDA='$AVISO' em $RAIZ/.env. Use sim ou nao." >&2
+    exit 1
+fi
+
 echo "==> Gerando a unit ($ESCOPO)"
 TEMPORARIO="$(mktemp)"
 trap 'rm -f "$TEMPORARIO"' EXIT
@@ -154,6 +186,7 @@ trap 'rm -f "$TEMPORARIO"' EXIT
 sed -e "s|RAIZ|$RAIZ|g" \
     -e "s|LINHA_DE_USUARIO|$LINHA_DE_USUARIO|" \
     -e "s|ALVO_DE_INSTALACAO|$ALVO|" \
+    -e "s|LINHA_DE_AVISO|$LINHA_DE_AVISO|" \
     -e "s|MEMORIA_FREIO|$MEMORIA_FREIO|" \
     -e "s|MEMORIA_PAREDE|$MEMORIA_PAREDE|" \
     "$RAIZ/deploy/worker-gpu.service" > "$TEMPORARIO"
