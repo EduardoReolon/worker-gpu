@@ -212,6 +212,24 @@ IMAGEM_PERMITIR_CPU = _booleano("IMAGEM_PERMITIR_CPU", False)
 # um `systemctl restart` fica preso esperando.
 IMAGEM_TEMPO_MAXIMO = _inteiro("IMAGEM_TEMPO_MAXIMO", 600)
 
+# Prazo DURO de um trabalho de imagem (carga do modelo + geracao), em
+# segundos. 0 desliga.
+#
+# O `IMAGEM_TEMPO_MAXIMO` so e conferido ENTRE passos da difusao. Um processo
+# travado — na carga, que nao tem passo nenhum, ou dentro de um passo — nunca
+# chega a conferir, e segurava a placa (e o texto de todos) por tempo
+# indefinido. Foi o que aconteceu com o worker estrangulado no `MemoryHigh`.
+#
+# Estourado este prazo, o worker considera-se QUEBRADO: responde 500
+# `worker_travado` e se mata, para o systemd subir um processo limpo em 10s.
+# Nao ha como cancelar a thread travada, e um processo que continua com ela
+# pendurada nao e confiavel.
+#
+# Precisa ser maior que o `IMAGEM_TEMPO_MAXIMO`: quem desiste primeiro de uma
+# geracao lenta mas saudavel e ele, com um 503 `timeout`. E a carga do
+# Z-Image leva de 1 a 3 minutos.
+IMAGEM_TEMPO_TRAVADO = _inteiro("IMAGEM_TEMPO_TRAVADO", 900)
+
 
 # ---------------------------------------------------------------------------
 # Conversao de PDF (Docling)

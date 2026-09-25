@@ -146,13 +146,19 @@ _do_env() {
 
 MEMORIA_FREIO="$(_do_env WORKER_MEMORY_HIGH)"
 MEMORIA_PAREDE="$(_do_env WORKER_MEMORY_MAX)"
-MEMORIA_FREIO="${MEMORIA_FREIO:-10G}"
-MEMORIA_PAREDE="${MEMORIA_PAREDE:-14G}"
+# Sem freio por padrao: acima do `MemoryHigh` o kernel estrangula em vez de
+# matar, e um worker estrangulado segura a placa sem responder a ninguem.
+MEMORIA_FREIO="${MEMORIA_FREIO:-infinity}"
+MEMORIA_PAREDE="${MEMORIA_PAREDE:-18G}"
 
 echo "==> Limites de memoria: freio $MEMORIA_FREIO, parede $MEMORIA_PAREDE"
 echo "    (WORKER_MEMORY_HIGH / WORKER_MEMORY_MAX no .env)"
-echo "    Acima do freio o kernel aperta; acima da parede ele mata, e o"
-echo "    Restart=always sobe de novo em 10s. Veja 'Convivendo com a maquina'."
+echo "    Acima da parede o kernel mata, o Restart=always sobe de novo em 10s"
+echo "    e o aviso de queda dispara. Veja 'Convivendo com a maquina'."
+if [[ "$MEMORIA_FREIO" != "infinity" ]]; then
+    echo "    AVISO: com freio, o worker pode ficar estrangulado e sem responder," >&2
+    echo "    em vez de morrer. Apague WORKER_MEMORY_HIGH do .env para desligar." >&2
+fi
 
 # Aviso de queda, tambem do `.env`. Antes ele se ligava descomentando uma linha
 # no molde — que e arquivo versionado, entao o `git pull` seguinte recusava ou

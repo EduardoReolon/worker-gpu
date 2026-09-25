@@ -74,21 +74,22 @@ TimeoutStopSec=90
 # ele fica lento de um jeito que se atribui ao modelo.
 MemorySwapMax=0
 
-# `MemoryHigh` e o freio, `MemoryMax` e a parede.
+# `MemoryMax` e a parede: passando dela, o processo e MORTO.
 #
-# Passando do `High`, o kernel reclama paginas com agressividade e o processo
-# e desacelerado — sem morrer. Passando do `Max`, ele e morto. Os dois juntos
-# dao a ordem certa: primeiro aperta, depois mata.
+# `MemoryHigh` (o freio) vem DESLIGADO (`infinity`), e de proposito. Acima
+# dele o kernel nao mata: estrangula. O processo quase para, segura a placa e
+# o lock, e ninguem recebe resposta — foi assim que um pedido de imagem prendeu
+# o worker por minutos, com CPU e GPU paradas, ate o cliente desistir pelo
+# proprio timeout. Morrer e melhor que isso: `Restart=always` sobe de novo em
+# 10s, o lock da GPU e um `threading.Lock` que morre com o processo (nao ha
+# lock preso possivel), o aviso de queda dispara e o cliente ve a falha.
 #
-# Morrer aqui e ACEITAVEL, e o resto do arranjo depende disso: `Restart=always`
-# sobe de novo em 10s, o lock da GPU e um `threading.Lock` que morre com o
-# processo (nao ha lock preso possivel), e os clientes ja tratam conexao
-# cortada como adiavel. Pior que morrer e arrastar a maquina inteira.
+# Ajuste para a SUA maquina. Numa de 32 GB, 18G cobre a carga do Z-Image em
+# 4 bits (o Ollama ja soltou o modelo de texto nessa hora) e sobra para o
+# desktop.
 #
-# Ajuste para a SUA maquina. Numa de 32 GB com um modelo de 30B ao lado, 10/14
-# deixa o worker trabalhar e ainda sobra para o desktop.
-#
-# Os valores vem do `.env` (`WORKER_MEMORY_HIGH` e `WORKER_MEMORY_MAX`), porque
+# Os valores vem do `.env` (`WORKER_MEMORY_MAX`, e `WORKER_MEMORY_HIGH` para
+# quem quiser o freio de volta), porque
 # esta copia e REESCRITA a cada `instalar.sh` — ajustar aqui seria perder o
 # ajuste no proximo install, em silencio.
 MemoryHigh=MEMORIA_FREIO

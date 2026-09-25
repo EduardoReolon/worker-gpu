@@ -141,6 +141,27 @@ def test_o_503_tem_a_forma_publicada(worker, cabecalhos):
     assert int(resposta.headers["Retry-After"]) > 0
 
 
+def test_o_500_de_worker_travado_tem_a_forma_publicada(worker, cabecalhos, monkeypatch):
+    import threading
+
+    import imagem
+
+    solta = threading.Event()
+    monkeypatch.setattr(imagem, "IMAGEM_TEMPO_TRAVADO", 0.2)
+    monkeypatch.setattr(imagem, "gerar_imagens", lambda *argumentos: solta.wait(5))
+    monkeypatch.setattr(imagem, "_morrer_em_seguida", lambda: None)
+
+    try:
+        resposta = TestClient(worker.app).post(
+            "/v1/images/generations", json={"prompt": "x"}, headers=cabecalhos
+        )
+    finally:
+        solta.set()
+
+    assert resposta.status_code == 500
+    assert _forma(_exemplo("falha-resposta.json")) <= _forma(resposta.json())
+
+
 def test_o_503_diz_qual_modelo_esta_na_placa(worker, cabecalhos):
     """E o campo que decide o que o cliente manda EM SEGUIDA. Sem ele, quem
     leva a recusa so sabe "volte em 18s" — e pode voltar com um pedido de

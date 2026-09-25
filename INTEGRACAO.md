@@ -111,6 +111,40 @@ não deve abrir disjuntor, e não deve marcar o trabalho como falho. Se o seu
 sistema conta tentativas, esse é o detalhe que mais importa: tratando 503 como
 erro, alguns minutos de disputa esgotam as tentativas de uma fila inteira.
 
+## O contrato do 500: o worker quebrou
+
+O 503 diz "não é a hora". O **500 com `error.code`** diz o contrário: **o
+worker quebrou**, e esperar não resolve.
+
+```http
+HTTP/1.1 500 Internal Server Error
+
+{"error": {"code": "worker_travado",
+           "message": "o trabalho de imagem passou de 900s (IMAGEM_TEMPO_TRAVADO) ..."}}
+```
+
+| `error.code` | Significa | O que fazer |
+|---|---|---|
+| `worker_travado` | um trabalho de imagem passou do prazo duro (`imagem.tempo_travado`) sem terminar nem falhar. O worker **se encerra** logo depois de responder, e o systemd sobe outro em ~10 s | **marcar o trabalho como falho**, não repetir automaticamente, e alertar quem cuida da máquina |
+
+**Isto é falha, e precisa aparecer como falha.** Não adie, não conte como
+503, e nunca marque o trabalho como concluído. É um defeito do worker (quase
+sempre memória na máquina da placa), que alguém precisa consertar. Repetir
+sozinho só repete a falha e prende a placa de novo.
+
+### Conexão cortada no meio: também é falha
+
+Se a conexão cai **depois** de o pedido ter sido aceito — `ConnectionError`,
+`RemoteDisconnected`, resposta vazia —, o processo do worker **morreu no meio
+do seu trabalho**. Na prática é o `MemoryMax`: o kernel mata o worker por
+memória, o systemd o sobe de novo em 10 s, e ninguém consegue te responder.
+
+Trate igual ao 500: **trabalho falho, com log alto**. O motivo de não adiar é
+que o mesmo pedido tende a matar o worker de novo.
+
+Conexão **recusada** antes de enviar (`ConnectionRefusedError`, o worker fora
+do ar ou reiniciando) é diferente: nada rodou. Essa adia, com teto.
+
 ### Por que 503 e não uma fila no worker
 
 Porque o worker **não tem estado durável**. Uma fila em memória perde trabalho
@@ -155,6 +189,11 @@ if resposta.status_code == 503:
     # Adiar NAO gasta tentativa: nada deu errado, so nao era a hora.
     raise Adiar(dados.get("message", ""), tentar_em_segundos=espera)
 
+if resposta.status_code == 500:
+    # O worker quebrou. Esperar nao resolve, e repetir so repete a falha.
+    dados = resposta.json().get("error", {})
+    raise TrabalhoFalhou(f"worker: {dados.get('code')}: {dados.get('message', '')}")
+
 if resposta.status_code in (400, 404, 422):
     # Isto e "seu pedido esta errado". Repetir nao muda nada.
     raise TrabalhoFalhou(resposta.text[:300])
@@ -170,8 +209,10 @@ Três detalhes que decidem se isso funciona sob carga:
 - **respeite o `Retry-After` como piso, não como valor final.** Um recuo
   próprio por cima (`max(retry_after, 5 * 2 ** adiamentos)`, limitado) evita
   bater na porta a cada 5 s durante uma geração de minutos;
-- **`ConnectionError` também é adiável.** Se o worker reiniciar no meio do seu
-  pedido, a conexão cai sem status HTTP nenhum. Conte no mesmo teto.
+- **conexão recusada é adiável; conexão cortada no meio não.** Recusada, o
+  worker estava fora do ar e nada rodou: conte no mesmo teto. Cortada depois
+  de aceita, ele morreu no meio do seu trabalho: é falha (veja **O contrato
+  do 500**).
 
 Se o seu sistema não tem orquestrador, o mínimo aceitável é reagendar a tarefa
 para `agora + Retry-After` e sair — **nunca** um `sleep` segurando o processo:
@@ -398,7 +439,7 @@ o `arbitro.py` diz explicitamente que hoje ele não faz nada disso.
 | Rota | Timeout sugerido | Orçamento do worker |
 |---|---|---|
 | `/v1/chat/completions` | 600 s | `OLLAMA_TIMEOUT`, 540 s |
-| `/v1/images/generations` | 300 s | `IMAGEM_TEMPO_MAXIMO`, 600 s |
+| `/v1/images/generations` | 960 s | `IMAGEM_TEMPO_TRAVADO`, 900 s (a geração em si: `IMAGEM_TEMPO_MAXIMO`, 600 s) |
 | `/parse/` | 600 s | sem teto |
 | `/health/` | 10 s | — |
 
@@ -683,6 +724,31 @@ pontos merecem olhada:
   cabeçalho — a única forma de 503 que saía daqui sem nada para decidir;
 - **`/health/` ganhou `ollama.carregados_detalhe`** e passou a nunca responder
   500. `ollama.carregados` continua sendo a lista de nomes, intocada;
+## O que mudou na 2.6
+
+Três mudanças que pedem código do seu lado, todas na rota de imagem:
+
+- **HTTP 500 com `error.code` novo, `worker_travado`**, e ele é **falha**, não
+  adiamento. Um trabalho que passa de `imagem.tempo_travado` (900 s) faz o
+  worker responder isso e se encerrar. Antes ele ficava preso sem responder,
+  segurando a placa, até o seu timeout — e um cliente que tratou esse timeout
+  como "terminou" marcou como concluído um trabalho sem imagem. Veja **O
+  contrato do 500**;
+- **conexão cortada no meio de um pedido passou a ser falha**, não
+  adiamento: é o worker morto por memória. Conexão recusada continua adiável;
+- **suba o timeout de imagem para mais que 900 s** (sugestão: 960 s). Com os
+  300 s de antes você desistia antes do worker, e nunca recebia o 500.
+
+E duas que só podem aparecer:
+
+- **o worker não tem mais prompt negativo próprio.** Mande `negative_prompt`
+  no pedido se quiser um; ele é repassado como veio. Modelos destilados
+  (`imagem.guidance` 0 no `/health/`) o ignoram;
+- **cada lado do `size` precisa ser múltiplo de 16**, e não de 8. Toda a grade
+  de treino já é; `1200x632`, que passava, agora volta `422`;
+- `/health/` ganhou `imagem.precisao`, `imagem.quantizacao` e
+  `imagem.tempo_travado`.
+
 ## O que mudou na 2.5
 
 Nada muda no que você manda. Dois acréscimos no `/health/` e uma mudança de
@@ -756,7 +822,9 @@ Só a rota de imagem, e é sobre qualidade:
 - [ ] `error.code` desconhecido **adia com teto**, nunca falha definitiva
 - [ ] `baixando_modelo` adia; o **404** que vem depois dele faz o trabalho falhar
 - [ ] 400/404/422 **falham**, não adiam
-- [ ] `ConnectionError` (restart do worker) entra no mesmo teto
+- [ ] **500 marca o trabalho como falho** e alerta; nunca adia, nunca "concluído"
+- [ ] Conexão **cortada** no meio é falha; conexão **recusada** adia com teto
+- [ ] Timeout de imagem **maior que `imagem.tempo_travado`** (960 s)
 - [ ] Sem `stream: true`
 - [ ] Timeout do cliente **maior** que `OLLAMA_TIMEOUT`, não igual
 - [ ] Janela de contexto por pedido em `options.num_ctx` (não precisa de Modelfile)

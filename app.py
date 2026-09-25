@@ -62,7 +62,7 @@ logger = logging.getLogger("worker-gpu")
 # ai quem integra precisa olhar, e `INTEGRACAO.md` ganha uma secao.
 # Acrescentar campo nao quebra ninguem e nao sobe nada: todo cliente deve
 # ignorar o que nao conhece.
-CONTRATO_VERSAO = "2.5"
+CONTRATO_VERSAO = "2.6"
 
 app = FastAPI(title="worker-gpu", version=CONTRATO_VERSAO)
 

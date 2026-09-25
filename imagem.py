@@ -57,6 +57,7 @@ from config import (
     IMAGEM_QUANTIZAR_COMPONENTES,
     IMAGEM_SCHEDULER,
     IMAGEM_TEMPO_MAXIMO,
+    IMAGEM_TEMPO_TRAVADO,
     IMAGEM_VAE,
     OLLAMA_DESCARREGAR_PARA_IMAGEM,
 )
@@ -69,6 +70,10 @@ router = APIRouter()
 
 class TempoEsgotado(RuntimeError):
     """A geracao passou de `IMAGEM_TEMPO_MAXIMO`."""
+
+
+class WorkerTravado(RuntimeError):
+    """O trabalho passou do `IMAGEM_TEMPO_TRAVADO`: o processo nao e confiavel."""
 
 
 _pipeline = None
@@ -207,6 +212,12 @@ def conferir_configuracao() -> None:
         raise RuntimeError(f"IMAGEM_DTYPE={IMAGEM_DTYPE!r}. Use float16 ou bfloat16.")
     if IMAGEM_QUANTIZAR not in ("nao", "4bit", "8bit"):
         raise RuntimeError(f"IMAGEM_QUANTIZAR={IMAGEM_QUANTIZAR!r}. Use nao, 4bit ou 8bit.")
+    if 0 < IMAGEM_TEMPO_TRAVADO <= IMAGEM_TEMPO_MAXIMO:
+        raise RuntimeError(
+            f"IMAGEM_TEMPO_TRAVADO={IMAGEM_TEMPO_TRAVADO} precisa ser maior que "
+            f"IMAGEM_TEMPO_MAXIMO={IMAGEM_TEMPO_MAXIMO}: uma geracao lenta mas saudavel "
+            f"tem que levar 503 `timeout`, e nao derrubar o processo."
+        )
     if IMAGEM_QUANTIZAR != "nao" and importlib.util.find_spec("bitsandbytes") is None:
         raise RuntimeError(
             f"IMAGEM_QUANTIZAR={IMAGEM_QUANTIZAR}, mas o bitsandbytes nao esta instalado.\n"
@@ -574,7 +585,13 @@ def gerar(pedido: PedidoDeImagem):
 
             dispositivo = resolver_dispositivo()
             try:
-                imagens = gerar_imagens(dispositivo, pedido, quantas, largura, altura)
+                imagens = _com_prazo_duro(
+                    lambda: gerar_imagens(dispositivo, pedido, quantas, largura, altura)
+                )
+            except WorkerTravado as exc:
+                logger.critical("%s Encerrando o processo para o systemd subir outro.", exc)
+                _morrer_em_seguida()
+                return respostas.falha_do_worker("worker_travado", str(exc))
             except TempoEsgotado as exc:
                 logger.warning("%s", exc)
                 # Sem `Retry-After`: para o codigo `timeout` a documentacao
@@ -608,7 +625,9 @@ def gerar(pedido: PedidoDeImagem):
                 )
                 descarregar()
                 dispositivo = "cpu"
-                imagens = gerar_imagens(dispositivo, pedido, quantas, largura, altura)
+                imagens = _com_prazo_duro(
+                    lambda: gerar_imagens(dispositivo, pedido, quantas, largura, altura)
+                )
 
             _ultimo_dispositivo = dispositivo
     except GpuOcupada as erro:
@@ -656,6 +675,51 @@ def _avisar_de_prompt_em_portugues(prompt: str) -> None:
             ", ".join(pistas[:4]),
             prompt,
         )
+
+
+def _com_prazo_duro(trabalho):
+    """Roda `trabalho` numa thread e desiste dela depois de `IMAGEM_TEMPO_TRAVADO`.
+
+    A thread nao e cancelada — Python nao sabe fazer isso, e o torch menos
+    ainda. Desistir aqui so faz sentido junto com matar o processo, que e o
+    que quem chama faz.
+    """
+    if IMAGEM_TEMPO_TRAVADO <= 0:
+        return trabalho()
+
+    resultado: dict = {}
+
+    def alvo():
+        try:
+            resultado["ok"] = trabalho()
+        except BaseException as exc:  # repassada inteira: o OOM de CUDA inclusive
+            resultado["erro"] = exc
+
+    thread = threading.Thread(target=alvo, name="imagem", daemon=True)
+    thread.start()
+    thread.join(IMAGEM_TEMPO_TRAVADO)
+
+    if thread.is_alive():
+        raise WorkerTravado(
+            f"o trabalho de imagem passou de {IMAGEM_TEMPO_TRAVADO}s (IMAGEM_TEMPO_TRAVADO) "
+            f"sem terminar nem falhar: travou na carga do modelo ou dentro de um passo. "
+            f"Causa comum: memoria. Veja `journalctl --user -u worker-gpu` e o "
+            f"`memory.events` da unit."
+        )
+    if "erro" in resultado:
+        raise resultado["erro"]
+    return resultado["ok"]
+
+
+def _morrer_em_seguida(atraso: float = 2.0) -> None:
+    """Encerra o processo com erro, depois de a resposta 500 sair.
+
+    Codigo 1, e nao 0: e o que o systemd le como falha, e o que dispara o
+    `Restart=always` e o `OnFailure=` (o aviso de queda).
+    """
+    temporizador = threading.Timer(atraso, os._exit, args=(1,))
+    temporizador.daemon = True
+    temporizador.start()
 
 
 def gerar_imagens(
@@ -762,4 +826,5 @@ def estado() -> dict:
         "grade": [f"{largura}x{altura}" for largura, altura in GRADE_DO_SDXL],
         "permite_cpu": IMAGEM_PERMITIR_CPU,
         "tempo_maximo": IMAGEM_TEMPO_MAXIMO,
+        "tempo_travado": IMAGEM_TEMPO_TRAVADO,
     }

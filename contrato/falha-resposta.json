@@ -1,0 +1,10 @@
+{
+  "_contrato_versao": "2.6",
+  "_rota": "/v1/images/generations, com HTTP 500 e SEM Retry-After",
+  "_nota": "500 com `error.code` e o WORKER dizendo que quebrou — o oposto do 503. Nao ha o que esperar: marque o trabalho como FALHO, nao repita automaticamente, e alerte quem cuida da maquina. Codigo possivel hoje: worker_travado.",
+  "_nota_worker_travado": "O trabalho passou do prazo duro (`imagem.tempo_travado` no /health/) sem terminar nem falhar — travado na carga do modelo ou dentro de um passo. O worker se ENCERRA logo depois de responder, e o systemd sobe um processo limpo em ~10s. Pedidos nesse intervalo podem levar conexao recusada.",
+  "error": {
+    "code": "worker_travado",
+    "message": "o trabalho de imagem passou de 900s (IMAGEM_TEMPO_TRAVADO) sem terminar nem falhar: travou na carga do modelo ou dentro de um passo."
+  }
+}

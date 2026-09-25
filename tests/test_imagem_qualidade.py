@@ -425,3 +425,32 @@ def test_quantizar_sem_bitsandbytes_recusa_na_subida(imagem_mod, monkeypatch):
 
 def test_o_padrao_sobe(imagem_mod):
     imagem_mod.conferir_configuracao()
+
+
+def test_o_prazo_duro_precisa_ser_maior_que_o_da_geracao(imagem_mod, monkeypatch):
+    """Iguais ou invertidos, uma geracao lenta mas saudavel derrubaria o
+    processo em vez de levar um 503 `timeout`."""
+    monkeypatch.setattr(imagem_mod, "IMAGEM_TEMPO_MAXIMO", 600)
+    monkeypatch.setattr(imagem_mod, "IMAGEM_TEMPO_TRAVADO", 600)
+
+    with pytest.raises(RuntimeError, match="precisa ser maior"):
+        imagem_mod.conferir_configuracao()
+
+
+def test_morrer_sai_com_codigo_de_falha(imagem_mod, monkeypatch):
+    """Codigo 1, e nao 0: e o que o systemd le como falha, e o que dispara o
+    `Restart=always` e o aviso de queda (`OnFailure=`)."""
+    import threading
+
+    saiu = threading.Event()
+    codigos = []
+
+    def sair(codigo):
+        codigos.append(codigo)
+        saiu.set()
+
+    monkeypatch.setattr(imagem_mod.os, "_exit", sair)
+    imagem_mod._morrer_em_seguida(atraso=0)
+
+    assert saiu.wait(2)
+    assert codigos == [1]

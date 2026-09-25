@@ -383,22 +383,39 @@ A unit (`deploy/worker-gpu.service`) já vem com eles:
 
 ```ini
 MemorySwapMax=0          # este serviço NUNCA usa swap
-MemoryHigh=10G           # o freio: acima daqui o kernel aperta
-MemoryMax=14G            # a parede: acima daqui ele morre
+MemoryHigh=infinity      # SEM freio: estrangulado, ele segura a placa sem responder
+MemoryMax=18G            # a parede: acima daqui ele morre
 ManagedOOMMemoryPressure=kill    # se o SISTEMA apertar, que morra ele
 Nice=10                          # o seu mouse vem antes
 CPUWeight=50
 IOWeight=50
 ```
 
-**Morrer aqui é aceitável, e o resto do arranjo depende disso.**
+**Morrer aqui é o desejado, e o resto do arranjo depende disso.**
 `Restart=always` sobe de novo em 10 s; o lock da GPU é um `threading.Lock` que
-morre com o processo (não existe lock preso possível); e os clientes já tratam
-conexão cortada como adiável. Pior que morrer é arrastar a máquina.
+morre com o processo (não existe lock preso possível); o aviso de queda
+dispara; e o cliente vê a falha. Pior que morrer é arrastar a máquina — ou
+ficar vivo sem responder.
 
-Ajuste `MemoryHigh`/`MemoryMax` para a sua: 10/14 GB numa máquina de 32 GB com
-um 30B ao lado deixa o worker trabalhar e sobra para o desktop. Confira o que
-ele realmente usa em `memoria.rss_mb` antes de apertar.
+**Por que sem freio.** Havia um `MemoryHigh=10G`. Acima dele o kernel não
+mata: estrangula. Na carga do Z-Image o worker passou de 10 GB e ficou minutos
+quase parado, segurando a placa e o lock: o pedido de imagem não terminou, os
+de texto levaram 503, e o cliente desistiu pelo próprio timeout achando que
+tinha acabado. O `memory.events` da unit mostrava `high 949796`.
+
+Ajuste `WORKER_MEMORY_MAX` para a sua máquina: 18 GB numa de 32 GB cobre a
+carga do Z-Image em 4 bits (o Ollama já soltou o modelo de texto nessa hora).
+Meça o pico real antes de apertar:
+
+```bash
+systemctl --user show worker-gpu -p MemoryPeak
+cat /sys/fs/cgroup$(systemctl --user show worker-gpu -p ControlGroup --value)/memory.events
+```
+
+**E se ele travar por outro motivo?** O `IMAGEM_TEMPO_TRAVADO` (900 s) é o
+prazo duro de um trabalho de imagem, carga incluída. Passado ele, o worker
+responde `500 worker_travado` ao cliente e se mata, com o mesmo efeito de uma
+morte por memória.
 
 `ManagedOOMMemoryPressure` precisa do `systemd-oomd` ativo
 (`systemctl status systemd-oomd`); sem ele a linha é ignorada em silêncio e a
@@ -530,6 +547,8 @@ journalctl --user -u worker-gpu -f
 | assunto duplicado, geometria torta | tamanho fora da grade de treino. `journalctl --user -u worker-gpu \| grep grade` |
 | a máquina inteira engasga | o worker no swap. Veja **Convivendo com a máquina** e `curl /health/ \| jq .memoria` |
 | o worker reinicia sozinho em laço | estourou o `MemoryMax`. `journalctl --user -u worker-gpu \| grep -i oom` |
+| `500 worker_travado` no cliente | um trabalho passou do `IMAGEM_TEMPO_TRAVADO`; o worker se matou. Veja o journal e o `memory.events` |
+| pedido "em execução" para sempre, CPU e GPU paradas | freio de memória (`MemoryHigh`) ligado. Apague `WORKER_MEMORY_HIGH` do `.env` e rode `./deploy/instalar.sh` |
 | uvicorn morre no boot | `BIND_HOST` inexistente, ou `BIND_PORT` vazio |
 
 ## Testes

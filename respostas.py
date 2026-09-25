@@ -49,3 +49,13 @@ def indisponivel(codigo: str, mensagem: str, *, retry_after: int | None = 60) ->
         status_code=503,
         headers=cabecalhos,
     )
+
+
+def falha_do_worker(codigo: str, mensagem: str) -> JSONResponse:
+    """500 para quando o WORKER quebrou, e nao o pedido nem a hora.
+
+    E o oposto do 503: nao ha o que esperar. O cliente marca o trabalho como
+    falho e avisa quem cuida da maquina — repetir so repete a falha. Sem
+    `Retry-After`, pelo mesmo motivo do `timeout`.
+    """
+    return JSONResponse({"error": {"code": codigo, "message": mensagem}}, status_code=500)

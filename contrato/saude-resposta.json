@@ -1,5 +1,5 @@
 {
-  "_contrato_versao": "2.5",
+  "_contrato_versao": "2.6",
   "_rota": "GET /health/ (sem credencial, de proposito)",
   "_nota": "Este endpoint NUNCA devolve 500. Um bloco que falha ao ser coletado vira {\"erro\": \"<tipo>: <mensagem>\"} no lugar do bloco, com HTTP 200 — o processo esta de pe, e e isso que o 200 afirma. Os blocos `imagem` e `conversao` so aparecem quando a rota correspondente esta ligada (veja `rotas`).",
   "_nota_baixando": "Downloads de modelo em curso, normalmente lista vazia. Um download NAO aparece em `ocupada` porque nao usa a placa: ele e rede e disco, e a imagem e a conversao seguem funcionando enquanto ele acontece. Enquanto um modelo esta aqui, os pedidos dele levam 503 `baixando_modelo`.",
@@ -56,7 +56,8 @@
     "area_maxima_mp": 1.2,
     "grade": ["1024x1024", "1344x768", "1536x640"],
     "permite_cpu": false,
-    "tempo_maximo": 600
+    "tempo_maximo": 600,
+    "tempo_travado": 900
   },
   "conversao": {
     "dispositivo": "auto",

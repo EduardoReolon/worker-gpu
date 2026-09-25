@@ -594,3 +594,71 @@ def test_com_ocioso_zero_o_docling_fica_residente(worker, monkeypatch):
     conversao._agendar_descarga()
 
     assert criados == []
+
+
+# ---------------------------------------------------------------------------
+# Worker travado: morre, e diz que morreu
+# ---------------------------------------------------------------------------
+def test_um_trabalho_travado_devolve_500_e_encerra_o_processo(cliente, cabecalhos, monkeypatch):
+    """O worker estrangulado no `MemoryHigh` segurou a placa por minutos, sem
+    resposta: o cliente desistiu pelo proprio timeout e marcou o trabalho como
+    concluido, sem imagem. Travado, o certo e dizer que quebrou e morrer — o
+    systemd sobe um processo limpo e o aviso de queda dispara."""
+    import threading
+
+    import imagem
+
+    solta = threading.Event()
+    mortes = []
+    monkeypatch.setattr(imagem, "IMAGEM_TEMPO_TRAVADO", 0.2)
+    monkeypatch.setattr(
+        imagem, "gerar_imagens", lambda *argumentos: solta.wait(5) and [b"tarde demais"]
+    )
+    monkeypatch.setattr(imagem, "_morrer_em_seguida", lambda: mortes.append(True))
+
+    try:
+        resposta = cliente.post("/v1/images/generations", json={"prompt": "x"}, headers=cabecalhos)
+    finally:
+        solta.set()
+
+    assert resposta.status_code == 500
+    assert resposta.json()["error"]["code"] == "worker_travado"
+    assert "Retry-After" not in resposta.headers
+    assert mortes == [True]
+
+
+def test_depois_de_travar_a_placa_nao_fica_presa(cliente, cabecalhos, monkeypatch):
+    """Nos 2s entre a resposta e a morte, o lock ja foi solto: quem chega leva
+    a resposta normal (ou a conexao cortada pela morte), nunca um 503 eterno."""
+    import threading
+
+    import arbitro
+    import imagem
+
+    solta = threading.Event()
+    monkeypatch.setattr(imagem, "IMAGEM_TEMPO_TRAVADO", 0.2)
+    monkeypatch.setattr(imagem, "gerar_imagens", lambda *argumentos: solta.wait(5))
+    monkeypatch.setattr(imagem, "_morrer_em_seguida", lambda: None)
+
+    try:
+        cliente.post("/v1/images/generations", json={"prompt": "x"}, headers=cabecalhos)
+        assert arbitro.ARBITRO.ocupacao is None
+    finally:
+        solta.set()
+
+
+def test_um_erro_dentro_do_prazo_chega_como_antes(cliente, cabecalhos, monkeypatch):
+    """A thread do prazo duro repassa a excecao inteira: o OOM de CUDA tem que
+    continuar virando `sem_vram`, e nao um 500 generico."""
+    import imagem
+
+    def falta_de_vram(*argumentos):
+        raise RuntimeError("CUDA out of memory. Tried to allocate 2.00 GiB")
+
+    monkeypatch.setattr(imagem, "gerar_imagens", falta_de_vram)
+    monkeypatch.setattr(imagem, "resolver_dispositivo", lambda: "cuda")
+
+    resposta = cliente.post("/v1/images/generations", json={"prompt": "x"}, headers=cabecalhos)
+
+    assert resposta.status_code == 503
+    assert resposta.json()["error"]["code"] == "sem_vram"
