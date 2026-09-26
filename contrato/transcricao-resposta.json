@@ -1,0 +1,14 @@
+{
+  "_contrato_versao": "2.7",
+  "_rota": "POST /v1/audio/transcriptions (multipart: file, model, language, prompt, response_format=verbose_json)",
+  "_nota": "Dialeto da OpenAI. `model` e aceito e ignorado: o modelo e o do worker (`transcricao.modelo` no /health/). `language` vazio faz o Whisper detectar; o detectado volta em `language`. `duration` e a duracao do AUDIO, em segundos, e nao o tempo de processamento. `segments` vem em ordem, com `start`/`end` em segundos; silencio longo nao gera segmento (VAD). Com `response_format=json` a resposta e so `{\"text\": ...}`; com `text`, texto puro.",
+  "_nota_erros": "422 (`error.code` arquivo_invalido) para o que nao e audio legivel, arquivo vazio ou response_format desconhecido; 413 (arquivo_grande) acima de `transcricao.max_bytes`. 503 com os codigos de sempre (gpu_ocupada, sem_vram, timeout). 500 com `error.code` (worker_travado, falha_na_transcricao) e FALHA do worker.",
+  "task": "transcribe",
+  "language": "pt",
+  "duration": 812.4,
+  "text": "Ola. Hoje vamos falar de BDI.",
+  "segments": [
+    {"id": 0, "start": 0.0, "end": 4.2, "text": "Ola."},
+    {"id": 1, "start": 4.2, "end": 9.8, "text": "Hoje vamos falar de BDI."}
+  ]
+}

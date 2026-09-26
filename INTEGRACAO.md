@@ -440,6 +440,7 @@ o `arbitro.py` diz explicitamente que hoje ele não faz nada disso.
 |---|---|---|
 | `/v1/chat/completions` | 600 s | `OLLAMA_TIMEOUT`, 540 s |
 | `/v1/images/generations` | 960 s | `IMAGEM_TEMPO_TRAVADO`, 900 s (a geração em si: `IMAGEM_TEMPO_MAXIMO`, 600 s) |
+| `/v1/audio/transcriptions` | 1800 s | `TRANSCRICAO_TEMPO_TRAVADO`, 1500 s (o áudio em si: `TRANSCRICAO_TEMPO_MAXIMO`, 1200 s) |
 | `/parse/` | 600 s | sem teto |
 | `/health/` | 10 s | — |
 
@@ -551,7 +552,61 @@ não dá erro, gera uma imagem a partir do pouco sinal que sobrou, e o resultado
 mudaria o seu pedido —, mas registra um aviso no journal quando detecta
 português. Se você gera o prompt com um LLM, peça a ele em inglês.
 
-### Conversão de PDF (Docling)
+### Transcrição de áudio (Whisper)
+
+```http
+POST /v1/audio/transcriptions
+Authorization: Bearer <segredo>
+Content-Type: multipart/form-data
+
+file=<o áudio>   model=whisper   language=pt   response_format=verbose_json
+```
+
+```json
+{"task": "transcribe",
+ "language": "pt",
+ "duration": 812.4,
+ "text": "Olá. Hoje vamos falar de BDI.",
+ "segments": [{"id": 0, "start": 0.0, "end": 4.2, "text": "Olá."},
+              {"id": 1, "start": 4.2, "end": 9.8, "text": "Hoje vamos falar de BDI."}]}
+```
+
+Exemplo completo em `contrato/transcricao-resposta.json`. É o dialeto da
+OpenAI, com o `faster-whisper` por trás.
+
+- **`file`**: qualquer áudio ou vídeo que o ffmpeg leia (`.mp3 .m4a .wav .ogg
+  .oga .opus .webm .mp4 .flac` e outros). O ffmpeg vem embutido; o formato é
+  descoberto pelo conteúdo, não pela extensão. Teto em `transcricao.max_bytes`
+  (1 GB), acima dele `413 arquivo_grande`;
+- **`model`**: aceito e **ignorado**. O modelo é o da máquina
+  (`transcricao.modelo` no `/health/`), como na imagem;
+- **`language`**: ISO de duas letras. Vazio, o Whisper detecta e devolve o que
+  detectou em `language`. Mandar quando se sabe melhora o começo do áudio;
+- **`prompt`**: opcional. Vira o contexto inicial do Whisper — útil para
+  siglas e nomes próprios que ele erraria (`"BDI, SINAPI, TCPO"`);
+- **`response_format`**: `verbose_json` (acima), `json` (só `{"text"}`) ou
+  `text` (texto puro). Outro valor volta `422`.
+
+`duration` é a duração do **áudio**, em segundos. `segments` vem em ordem;
+trechos de silêncio longo não geram segmento, porque o filtro de voz (VAD) os
+pula antes de transcrever — é também o que evita o Whisper inventar frases em
+trechos mudos.
+
+**Erros**, no contrato de sempre:
+
+| Situação | Resposta |
+|---|---|
+| placa ocupada | `503 gpu_ocupada`, com `Retry-After` — adie |
+| sem VRAM | `503 sem_vram`, com `Retry-After` — adie |
+| áudio longo demais para o teto | `503 timeout`, **sem** `Retry-After` — falha; o mesmo áudio daria o mesmo resultado |
+| travado | `500 worker_travado` — falha, e o worker se reinicia |
+| outra falha do worker | `500 falha_na_transcricao` — falha |
+| não é áudio legível, vazio, ou `response_format` errado | `422 arquivo_invalido`, com `error.message` |
+| grande demais | `413 arquivo_grande`, com `error.message` |
+
+Os 4xx desta rota trazem `error.message` **e** `detail`: leia qualquer um.
+
+### Conversão de documentos (Docling)
 
 ```http
 POST /parse/
@@ -569,6 +624,12 @@ multipart/form-data, campo `file`
 ```
 
 Exemplo completo em `contrato/conversao-resposta.json`.
+
+**Formatos: `.pdf`, `.docx`, `.pptx`, `.xlsx`**, reconhecidos pela extensão do
+nome do arquivo — mande o nome certo. Outro formato volta `422`. PDF passa pela
+análise de layout descrita abaixo; os do Office declaram a estrutura e são
+lidos direto, com mais fidelidade em tabelas e figuras que um extrator de
+texto.
 
 #### O que ele realmente faz
 
@@ -724,6 +785,17 @@ pontos merecem olhada:
   cabeçalho — a única forma de 503 que saía daqui sem nada para decidir;
 - **`/health/` ganhou `ollama.carregados_detalhe`** e passou a nunca responder
   500. `ollama.carregados` continua sendo a lista de nomes, intocada;
+## O que mudou na 2.7
+
+Só acréscimos:
+
+- **rota nova, `POST /v1/audio/transcriptions`** (Whisper), no dialeto da
+  OpenAI. Veja **Transcrição de áudio**. Timeout sugerido: 1800 s;
+- **`/parse/` aceita `.docx`, `.pptx` e `.xlsx`** além de PDF. Outro formato,
+  que antes falhava lá dentro com `500`, agora volta `422`;
+- `/health/` ganhou o bloco `transcricao` e `rotas.transcricao`; `/v1/models`
+  lista o modelo do Whisper.
+
 ## O que mudou na 2.6
 
 Três mudanças que pedem código do seu lado, todas na rota de imagem:
@@ -826,6 +898,7 @@ Só a rota de imagem, e é sobre qualidade:
 - [ ] Conexão **cortada** no meio é falha; conexão **recusada** adia com teto
 - [ ] Timeout de imagem **maior que `imagem.tempo_travado`** (960 s)
 - [ ] Sem `stream: true`
+- [ ] Transcrição com timeout de **1800 s**, e `503 timeout` nela é falha, não adiamento
 - [ ] Timeout do cliente **maior** que `OLLAMA_TIMEOUT`, não igual
 - [ ] Janela de contexto por pedido em `options.num_ctx` (não precisa de Modelfile)
 - [ ] Truncamento monitorado por `usage.prompt_tokens`

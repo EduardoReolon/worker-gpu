@@ -12,6 +12,7 @@ Ollama:
     POST /v1/chat/completions    texto        (repassa ao Ollama)
     POST /v1/images/generations  imagem       (difusao)
     POST /parse/                 conversao    (Docling)
+    POST /v1/audio/transcriptions transcricao (faster-whisper)
     GET  /v1/models              catalogo
     GET  /health/                estado, sem credencial
 
@@ -52,8 +53,9 @@ import modelos
 import ollama
 import recursos
 import texto
+import transcricao
 from arbitro import ARBITRO
-from config import CONVERSAO_ATIVA, IMAGEM_ATIVA
+from config import CONVERSAO_ATIVA, IMAGEM_ATIVA, TRANSCRICAO_ATIVA
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(asctime)s %(name)s %(message)s")
 logger = logging.getLogger("worker-gpu")
@@ -62,7 +64,7 @@ logger = logging.getLogger("worker-gpu")
 # ai quem integra precisa olhar, e `INTEGRACAO.md` ganha uma secao.
 # Acrescentar campo nao quebra ninguem e nao sobe nada: todo cliente deve
 # ignorar o que nao conhece.
-CONTRATO_VERSAO = "2.6"
+CONTRATO_VERSAO = "2.7"
 
 app = FastAPI(title="worker-gpu", version=CONTRATO_VERSAO)
 
@@ -75,6 +77,12 @@ if IMAGEM_ATIVA:
     # ausente so apareceria ali, como 500.
     imagem.conferir_configuracao()
     app.include_router(imagem.router)
+
+if TRANSCRICAO_ATIVA:
+    # Na subida, pelo mesmo motivo da imagem: o Whisper carrega no primeiro
+    # audio, e um `faster-whisper` ausente so apareceria ali.
+    transcricao.conferir_configuracao()
+    app.include_router(transcricao.router)
 
 if CONVERSAO_ATIVA:
     # Conferido na subida, e nao na primeira conversao: um OCR pedido e
@@ -175,6 +183,7 @@ def health():
         "texto": True,
         "imagem": IMAGEM_ATIVA,
         "conversao": CONVERSAO_ATIVA,
+        "transcricao": TRANSCRICAO_ATIVA,
     }
     # Memoria DESTE processo, e nao do sistema. E o campo que faltava: nesta
     # maquina quem foi para o swap foi o worker, nao o Ollama, e a suspeita
@@ -188,5 +197,7 @@ def health():
         corpo["imagem"] = _bloco("imagem", imagem.estado)
     if CONVERSAO_ATIVA:
         corpo["conversao"] = _bloco("conversao", conversao.estado)
+    if TRANSCRICAO_ATIVA:
+        corpo["transcricao"] = _bloco("transcricao", transcricao.estado)
 
     return corpo

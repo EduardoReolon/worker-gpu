@@ -46,6 +46,13 @@ safetensors>=0.4,<1
 # o codificador de texto do Z-Image e um Qwen3, que chegou na 4.51.
 transformers>=4.51
 
+# --- Transcricao de audio ----------------------------------------------------
+# CTranslate2 por baixo, com o ffmpeg embutido pelo PyAV: nao precisa de ffmpeg
+# no sistema. Na placa, o CTranslate2 usa o cuBLAS do CUDA 12 e o cuDNN 9 —
+# os mesmos pacotes `nvidia-*` que o torch ja traz para o venv. 1.1 e a
+# primeira com o `large-v3-turbo`.
+faster-whisper>=1.1,<2
+
 # Quantizacao em 4/8 bits (`IMAGEM_QUANTIZAR`). E o que faz um modelo de 6B,
 # como o Z-Image-Turbo, caber numa placa de 8 GB. 0.48: antes dela o 8 bits
 # nao sai da placa, e o `enable_model_cpu_offload` o pula.

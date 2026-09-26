@@ -255,6 +255,49 @@ MAX_PDF_BYTES = _inteiro("MAX_PDF_BYTES", 100 * 1024 * 1024)
 
 
 # ---------------------------------------------------------------------------
+# Transcricao de audio (faster-whisper)
+# ---------------------------------------------------------------------------
+TRANSCRICAO_ATIVA = _booleano("TRANSCRICAO_ATIVA", True)
+
+# Nome de modelo do faster-whisper (`large-v3`, `large-v3-turbo`, `medium`...)
+# ou um caminho local. `large-v3` em int8 ocupa ~3 GB de VRAM. O `turbo` tem o
+# decodificador destilado: bem mais rapido, um pouco pior em portugues.
+TRANSCRICAO_MODELO = os.environ.get("TRANSCRICAO_MODELO", "large-v3").strip()
+
+# `auto` usa a placa se o CTranslate2 a enxergar. `cpu` funciona, e leva da
+# ordem da duracao do audio.
+TRANSCRICAO_DEVICE = os.environ.get("TRANSCRICAO_DEVICE", "auto").strip().lower()
+
+# Tipo de computacao do CTranslate2 na placa. `int8_float16`: pesos em 8 bits,
+# contas em float16 — metade da VRAM do float16 puro, sem perda que se ouca.
+# Em CPU e sempre `int8`.
+TRANSCRICAO_COMPUTACAO = os.environ.get("TRANSCRICAO_COMPUTACAO", "int8_float16").strip()
+
+# Filtro de voz (VAD): pula o silencio antes de transcrever. Alem de poupar
+# tempo, e o que evita o Whisper "alucinar" frases em trechos mudos.
+TRANSCRICAO_VAD = _booleano("TRANSCRICAO_VAD", True)
+TRANSCRICAO_BEAM = _inteiro("TRANSCRICAO_BEAM", 5)
+
+# Devolver a memoria do modelo depois de ocioso. Recarregar custa ~10-20 s.
+TRANSCRICAO_OCIOSO_SEGUNDOS = _inteiro("TRANSCRICAO_OCIOSO_SEGUNDOS", 600)
+
+# Teto "macio", conferido entre segmentos: estourado, 503 `timeout`. Um audio
+# de uma hora leva poucos minutos numa placa de 8 GB.
+TRANSCRICAO_TEMPO_MAXIMO = _inteiro("TRANSCRICAO_TEMPO_MAXIMO", 1200)
+
+# Prazo DURO (carga + transcricao), como o `IMAGEM_TEMPO_TRAVADO`: estourado,
+# 500 `worker_travado` e o processo se encerra. Precisa ser maior que o macio
+# e MENOR que o timeout do cliente (1800 s no PubliBot), para o 500 legivel
+# chegar antes de ele desistir.
+TRANSCRICAO_TEMPO_TRAVADO = _inteiro("TRANSCRICAO_TEMPO_TRAVADO", 1500)
+
+MAX_AUDIO_BYTES = _inteiro("MAX_AUDIO_BYTES", 1024 * 1024 * 1024)
+
+# O Whisper disputa a VRAM com o modelo de texto, como a difusao.
+OLLAMA_DESCARREGAR_PARA_TRANSCRICAO = _booleano("OLLAMA_DESCARREGAR_PARA_TRANSCRICAO", True)
+
+
+# ---------------------------------------------------------------------------
 # Arbitragem
 # ---------------------------------------------------------------------------
 # Quanto esperar pelo lock antes de devolver 503. Zero = recusa na hora.
@@ -271,4 +314,7 @@ DURACAO_ESTIMADA = {
     "texto": _inteiro("ESTIMATIVA_TEXTO", 30),
     "imagem": _inteiro("ESTIMATIVA_IMAGEM", 60),
     "conversao": _inteiro("ESTIMATIVA_CONVERSAO", 40),
+    # Um audio de uma hora leva alguns minutos. O `Retry-After` encolhe com o
+    # tempo decorrido, entao errar para cima so custa a primeira espera.
+    "transcricao": _inteiro("ESTIMATIVA_TRANSCRICAO", 300),
 }

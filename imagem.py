@@ -40,6 +40,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 import ollama
+import prazo
 import respostas
 from arbitro import ARBITRO, GpuOcupada
 from config import (
@@ -61,6 +62,7 @@ from config import (
     IMAGEM_VAE,
     OLLAMA_DESCARREGAR_PARA_IMAGEM,
 )
+from prazo import WorkerTravado
 from seguranca import conferir
 
 logger = logging.getLogger("worker-gpu.imagem")
@@ -70,10 +72,6 @@ router = APIRouter()
 
 class TempoEsgotado(RuntimeError):
     """A geracao passou de `IMAGEM_TEMPO_MAXIMO`."""
-
-
-class WorkerTravado(RuntimeError):
-    """O trabalho passou do `IMAGEM_TEMPO_TRAVADO`: o processo nao e confiavel."""
 
 
 _pipeline = None
@@ -678,48 +676,11 @@ def _avisar_de_prompt_em_portugues(prompt: str) -> None:
 
 
 def _com_prazo_duro(trabalho):
-    """Roda `trabalho` numa thread e desiste dela depois de `IMAGEM_TEMPO_TRAVADO`.
-
-    A thread nao e cancelada — Python nao sabe fazer isso, e o torch menos
-    ainda. Desistir aqui so faz sentido junto com matar o processo, que e o
-    que quem chama faz.
-    """
-    if IMAGEM_TEMPO_TRAVADO <= 0:
-        return trabalho()
-
-    resultado: dict = {}
-
-    def alvo():
-        try:
-            resultado["ok"] = trabalho()
-        except BaseException as exc:  # repassada inteira: o OOM de CUDA inclusive
-            resultado["erro"] = exc
-
-    thread = threading.Thread(target=alvo, name="imagem", daemon=True)
-    thread.start()
-    thread.join(IMAGEM_TEMPO_TRAVADO)
-
-    if thread.is_alive():
-        raise WorkerTravado(
-            f"o trabalho de imagem passou de {IMAGEM_TEMPO_TRAVADO}s (IMAGEM_TEMPO_TRAVADO) "
-            f"sem terminar nem falhar: travou na carga do modelo ou dentro de um passo. "
-            f"Causa comum: memoria. Veja `journalctl --user -u worker-gpu` e o "
-            f"`memory.events` da unit."
-        )
-    if "erro" in resultado:
-        raise resultado["erro"]
-    return resultado["ok"]
+    return prazo.com_prazo_duro(trabalho, IMAGEM_TEMPO_TRAVADO, "imagem", "IMAGEM_TEMPO_TRAVADO")
 
 
 def _morrer_em_seguida(atraso: float = 2.0) -> None:
-    """Encerra o processo com erro, depois de a resposta 500 sair.
-
-    Codigo 1, e nao 0: e o que o systemd le como falha, e o que dispara o
-    `Restart=always` e o `OnFailure=` (o aviso de queda).
-    """
-    temporizador = threading.Timer(atraso, os._exit, args=(1,))
-    temporizador.daemon = True
-    temporizador.start()
+    prazo.morrer_em_seguida(atraso)
 
 
 def gerar_imagens(

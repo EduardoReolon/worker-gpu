@@ -106,8 +106,22 @@ def main() -> int:
             print(f"ERRO ao baixar o VAE {vae}: {erro}", file=sys.stderr)
             return 1
 
+    ativa = os.environ.get("TRANSCRICAO_ATIVA", "sim").strip().lower()
+    whisper = os.environ.get("TRANSCRICAO_MODELO", "large-v3").strip()
+    if ativa in {"1", "true", "yes", "sim", "on"} and not os.path.isdir(whisper):
+        # Mesmo motivo da imagem: sem isto, o primeiro audio baixa ~3 GB DENTRO
+        # da requisicao.
+        print(f"Baixando o Whisper {whisper} ...")
+        try:
+            from faster_whisper import download_model
+
+            download_model(whisper)
+        except Exception as erro:
+            print(f"ERRO ao baixar o Whisper {whisper}: {erro}", file=sys.stderr)
+            return 1
+
     print(f"Pronto em {time.perf_counter() - inicio:.0f}s. O cache esta em ~/.cache/huggingface.")
-    print("A primeira geracao agora so le do disco.")
+    print("A primeira geracao (e a primeira transcricao) agora so le do disco.")
     return 0
 
 

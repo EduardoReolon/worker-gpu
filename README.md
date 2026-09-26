@@ -14,11 +14,12 @@ Por isso **tudo** entra por aqui, inclusive o texto:
 |---|---|
 | `POST /v1/chat/completions` | texto — repassa ao Ollama |
 | `POST /v1/images/generations` | imagem — difusão |
-| `POST /parse/` | PDF para Markdown com análise de layout |
+| `POST /parse/` | PDF, DOCX, PPTX ou XLSX para Markdown (Docling) |
+| `POST /v1/audio/transcriptions` | áudio para texto com tempos (Whisper) |
 | `GET /v1/models` | catálogo |
 | `GET /health/` | estado, sem credencial |
 
-As três primeiras disputam **um lock só**. Quem não pega recebe `503` com
+Todas as de `POST` disputam **um lock só**. Quem não pega recebe `503` com
 `Retry-After` calculado.
 
 > Integrando um cliente? **[`INTEGRACAO.md`](INTEGRACAO.md)** tem o guia

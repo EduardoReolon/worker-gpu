@@ -112,6 +112,29 @@ def test_a_resposta_de_imagem_tem_a_forma_publicada(cliente, cabecalhos):
     assert _forma(_exemplo("imagem-resposta.json")) <= _forma(resposta.json())
 
 
+def test_a_resposta_de_transcricao_tem_a_forma_publicada(cliente, cabecalhos, monkeypatch):
+    import json as _json
+
+    import ollama
+    import transcricao
+
+    exemplo = _json.loads((CONTRATO / "transcricao-resposta.json").read_text(encoding="utf-8"))
+    corpo = {chave: valor for chave, valor in exemplo.items() if not chave.startswith("_")}
+    monkeypatch.setattr(transcricao, "transcrever", lambda *argumentos: corpo)
+    monkeypatch.setattr(transcricao, "resolver_dispositivo", lambda: "cuda")
+    monkeypatch.setattr(ollama, "descarregar_tudo", lambda: None)
+
+    resposta = cliente.post(
+        "/v1/audio/transcriptions",
+        files={"file": ("a.mp3", b"ID3", "audio/mpeg")},
+        data={"response_format": "verbose_json"},
+        headers=cabecalhos,
+    )
+
+    assert resposta.status_code == 200
+    assert _forma(_exemplo("transcricao-resposta.json")) <= _forma(resposta.json())
+
+
 def test_a_resposta_de_conversao_tem_a_forma_publicada(cliente, cabecalhos):
     resposta = cliente.post(
         "/parse/", files={"file": ("a.pdf", b"%PDF", "application/pdf")}, headers=cabecalhos

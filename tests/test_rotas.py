@@ -662,3 +662,44 @@ def test_um_erro_dentro_do_prazo_chega_como_antes(cliente, cabecalhos, monkeypat
 
     assert resposta.status_code == 503
     assert resposta.json()["error"]["code"] == "sem_vram"
+
+
+# ---------------------------------------------------------------------------
+# /parse/: os formatos do Office, e o nome do arquivo
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("nome", ["a.docx", "b.PPTX", "c.xlsx", "d.pdf"])
+def test_o_parse_aceita_pdf_e_os_formatos_do_office(cliente, cabecalhos, nome):
+    resposta = cliente.post(
+        "/parse/", files={"file": (nome, PDF, "application/octet-stream")}, headers=cabecalhos
+    )
+
+    assert resposta.status_code == 200
+
+
+def test_o_parse_recusa_formato_desconhecido_com_422(cliente, cabecalhos):
+    """422, e nao 500: pelo contrato um 500 diz que o worker quebrou."""
+    resposta = cliente.post(
+        "/parse/", files={"file": ("a.exe", PDF, "application/octet-stream")}, headers=cabecalhos
+    )
+
+    assert resposta.status_code == 422
+    assert ".docx" in resposta.json()["detail"]
+
+
+def test_o_nome_do_arquivo_nao_escapa_da_pasta_temporaria(cliente, cabecalhos, monkeypatch):
+    import conversao
+
+    vistos = []
+
+    class _Espiao(_ConversorFalso):
+        def convert(self, caminho):
+            vistos.append(caminho)
+            return super().convert(caminho)
+
+    monkeypatch.setattr(conversao, "obter_conversor", lambda: _Espiao())
+
+    cliente.post(
+        "/parse/", files={"file": ("../../fora.pdf", PDF, "application/pdf")}, headers=cabecalhos
+    )
+
+    assert vistos and ".." not in vistos[0] and vistos[0].endswith("/fora.pdf")

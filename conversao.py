@@ -1,7 +1,7 @@
 """Rota de conversao: `POST /parse/`, arbitrada.
 
-Recebe um PDF, devolve Markdown com a estrutura da pagina interpretada —
-coluna dupla, tabela, cabecalho, rodape, legenda. E o que distingue este
+Recebe um PDF (ou DOCX, PPTX, XLSX), devolve Markdown com a estrutura
+interpretada — coluna dupla, tabela, cabecalho, rodape, legenda. E o que distingue este
 caminho de um extrator de camada de texto, que num artigo de duas colunas
 intercala as frases e produz um texto que PARECE correto.
 
@@ -18,8 +18,10 @@ import hmac
 import importlib.util
 import logging
 import sys
+import tempfile
 import threading
 import time
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, Header, HTTPException, UploadFile
 
@@ -37,6 +39,12 @@ from seguranca import conferir
 logger = logging.getLogger("worker-gpu.conversao")
 
 router = APIRouter()
+
+# Os formatos aceitos, pela extensao do nome do arquivo — e por ela que o
+# Docling escolhe o leitor. PDF passa pela analise de layout (os modelos de
+# visao); os do Office declaram a estrutura e sao lidos direto, sem placa, com
+# mais fidelidade em tabela e figura que um extrator de texto.
+FORMATOS = (".pdf", ".docx", ".pptx", ".xlsx")
 
 _conversor = None
 _trava = threading.Lock()
@@ -160,7 +168,7 @@ def parse(
     file: UploadFile,
     x_expected_sha256: str | None = Header(default=None),
 ):
-    """Converte um PDF em Markdown.
+    """Converte um documento (`FORMATOS`) em Markdown.
 
     `def` e nao `async def`: a conversao bloqueia por dezenas de segundos, e
     no event loop ela congelaria o processo inteiro.
@@ -168,6 +176,19 @@ def parse(
     # `file.file.read()` e nao `await file.read()`: num handler sincrono nao ha
     # corrotina a esperar. O `UploadFile` guarda o arquivo num
     # `SpooledTemporaryFile`, que e o objeto sincrono por tras.
+    # So o NOME, sem pasta: o `filename` vem do cliente, e `pasta / "../x"`
+    # escaparia do diretorio temporario.
+    nome = Path(file.filename or "").name or "documento.pdf"
+    extensao = Path(nome).suffix.lower()
+    if extensao not in FORMATOS:
+        # 422, e nao o 500 que a conversao daria la dentro: e o pedido que esta
+        # errado, e pelo contrato um 500 diz que o worker quebrou.
+        raise HTTPException(
+            422,
+            f"formato {extensao or '(sem extensao)'!r} nao aceito. "
+            f"Use um de: {', '.join(FORMATOS)}.",
+        )
+
     conteudo = file.file.read()
 
     if len(conteudo) > MAX_PDF_BYTES:
@@ -182,11 +203,8 @@ def parse(
     inicio = time.perf_counter()
     try:
         with ARBITRO.usar("conversao"):
-            import tempfile
-            from pathlib import Path
-
             with tempfile.TemporaryDirectory() as pasta:
-                caminho = Path(pasta) / (file.filename or "documento.pdf")
+                caminho = Path(pasta) / nome
                 caminho.write_bytes(conteudo)
                 resultado = obter_conversor().convert(str(caminho))
                 markdown = resultado.document.export_to_markdown()
