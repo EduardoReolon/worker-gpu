@@ -118,20 +118,25 @@ def resolver_dispositivo() -> str:
 
 
 def _preparar_bibliotecas_cuda() -> None:
-    """Deixa o cuBLAS e o cuDNN do CUDA 12 carregados antes do CTranslate2.
+    """Deixa o cuBLAS do CUDA 12 carregado antes do CTranslate2.
 
-    O CTranslate2 abre `libcublas.so.12` e `libcudnn*.so.9` pelo NOME, e so os
-    acha no caminho de bibliotecas do sistema. Numa maquina sem o CUDA
-    instalado a parte, eles existem apenas dentro do venv, nos pacotes
-    `nvidia-*` que o torch traz — e a primeira transcricao falharia com
-    "Library libcublas.so.12 is not found".
+    O CTranslate2 abre `libcublas.so.12` pelo NOME, e so o acha no caminho de
+    bibliotecas do sistema. Numa maquina sem o CUDA instalado a parte, ele
+    existe apenas dentro do venv, no pacote `nvidia-cublas-cu12` — e a
+    primeira transcricao falharia com "Library libcublas.so.12 is not found".
+
+    So o cuBLAS, e nao o cuDNN: desde a 4.6.3 o CTranslate2 e compilado sem
+    cuDNN (a Conv1d do Whisper tem implementacao CUDA propria). E ainda bem —
+    o `nvidia-cudnn-cu12` e o `nvidia-cudnn-cu13` gravam os MESMOS arquivos, e
+    instalar o do CUDA 12 sobrescreve o cuDNN que um torch em CUDA 13 usa.
+    O cuBLAS nao conflita: o do CUDA 13 mora em `nvidia/cu13/`.
 
     Carregar com RTLD_GLOBAL resolve: um `dlopen` pelo nome encontra a
     biblioteca ja carregada no processo. Nao achar nada nao e erro — o sistema
     pode ter o CUDA instalado, e se nao tiver, a mensagem de `_carregar` diz
     o que fazer.
     """
-    for pacote in ("nvidia.cublas", "nvidia.cudnn"):
+    for pacote in ("nvidia.cublas",):
         try:
             especificacao = importlib.util.find_spec(pacote)
         except (ImportError, ValueError):
@@ -143,9 +148,8 @@ def _preparar_bibliotecas_cuda() -> None:
             pasta = Path(raiz) / "lib"
             if not pasta.is_dir():
                 continue
-            # A ordem importa pouco com RTLD_GLOBAL, mas o `Lt` antes do
-            # cuBLAS e o nucleo do cuDNN antes dos modulos evita um aviso a
-            # mais no log de quem estiver olhando.
+            # `libcublasLt` antes de `libcublas`, que depende dele: a ordem
+            # alfabetica ja da isso.
             for biblioteca in sorted(pasta.glob("lib*.so*")):
                 try:
                     ctypes.CDLL(str(biblioteca), mode=ctypes.RTLD_GLOBAL)
@@ -168,11 +172,11 @@ def _carregar(dispositivo: str):
         modelo = WhisperModel(TRANSCRICAO_MODELO, device=dispositivo, compute_type=computacao)
     except Exception as exc:
         texto = str(exc)
-        if "libcublas" in texto or "libcudnn" in texto:
+        if "libcublas" in texto:
             raise RuntimeError(
-                f"{texto}\nO CTranslate2 precisa do cuBLAS do CUDA 12 e do cuDNN 9. "
-                f"Instale no venv do worker:\n"
-                f'  ./venv/bin/pip install nvidia-cublas-cu12 "nvidia-cudnn-cu12==9.*"\n'
+                f"{texto}\nO CTranslate2 precisa do cuBLAS do CUDA 12, mesmo com o torch "
+                f"em CUDA 13. Instale no venv do worker:\n"
+                f"  ./venv/bin/pip install -r requirements.txt\n"
                 f"ou use TRANSCRICAO_DEVICE=cpu."
             ) from exc
         raise

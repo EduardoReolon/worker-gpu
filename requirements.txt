@@ -48,10 +48,19 @@ transformers>=4.51
 
 # --- Transcricao de audio ----------------------------------------------------
 # CTranslate2 por baixo, com o ffmpeg embutido pelo PyAV: nao precisa de ffmpeg
-# no sistema. Na placa, o CTranslate2 usa o cuBLAS do CUDA 12 e o cuDNN 9 —
-# os mesmos pacotes `nvidia-*` que o torch ja traz para o venv. 1.1 e a
-# primeira com o `large-v3-turbo`.
+# no sistema. 1.1 e a primeira com o `large-v3-turbo`.
 faster-whisper>=1.1,<2
+
+# 4.6.3 e a primeira compilada SEM cuDNN. Importa: o `nvidia-cudnn-cu12` e o
+# `nvidia-cudnn-cu13` gravam os mesmos arquivos (`nvidia/cudnn/lib`), e
+# instalar o do CUDA 12 para o Whisper sobrescreveria o cuDNN do torch.
+ctranslate2>=4.6.3,<5
+
+# O cuBLAS que o CTranslate2 usa e o do CUDA 12, qualquer que seja o CUDA do
+# torch — e com o torch em CUDA 13 (o padrao agora) ele nao vem junto. Nao
+# conflita com o do CUDA 13, que mora em `nvidia/cu13/`. So Linux: e o unico
+# lugar onde este worker roda com placa.
+nvidia-cublas-cu12; sys_platform == "linux"
 
 # Quantizacao em 4/8 bits (`IMAGEM_QUANTIZAR`). E o que faz um modelo de 6B,
 # como o Z-Image-Turbo, caber numa placa de 8 GB. 0.48: antes dela o 8 bits
