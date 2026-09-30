@@ -48,6 +48,20 @@ def _do_env() -> None:
         os.environ.setdefault(chave, valor)
 
 
+def _ler_vetor(arquivo: Path) -> list[float]:
+    """O vetor do servidor, tolerando o que o `manage.py shell` imprime junto.
+
+    O shell do Django 5.2 abre com "12 objects imported automatically ...", e
+    um `> vetor.json` grava isso no arquivo antes do JSON. Vale a ultima linha
+    que for uma lista.
+    """
+    for linha in reversed(arquivo.read_text(encoding="utf-8").splitlines()):
+        linha = linha.strip()
+        if linha.startswith("[") and linha.endswith("]"):
+            return json.loads(linha)
+    raise SystemExit(f"{arquivo}: nenhuma linha com a lista de numeros do vetor.")
+
+
 def _normalizar(vetor: list[float]) -> list[float]:
     norma = math.sqrt(sum(x * x for x in vetor)) or 1.0
     return [x / norma for x in vetor]
@@ -93,7 +107,7 @@ def main() -> int:
         print("Para o cosseno exato: --servidor vetor.json")
         return 0
 
-    do_servidor = json.loads(Path(argumentos.servidor).read_text(encoding="utf-8"))
+    do_servidor = _ler_vetor(Path(argumentos.servidor))
     if len(do_servidor) != len(vetor):
         print(
             f"Dimensoes diferentes: servidor {len(do_servidor)}, worker {len(vetor)}.",
