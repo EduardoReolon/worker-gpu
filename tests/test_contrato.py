@@ -135,6 +135,42 @@ def test_a_resposta_de_transcricao_tem_a_forma_publicada(cliente, cabecalhos, mo
     assert _forma(_exemplo("transcricao-resposta.json")) <= _forma(resposta.json())
 
 
+def test_a_resposta_de_vetorizacao_tem_a_forma_publicada(cliente, cabecalhos, monkeypatch):
+    import vetorizacao
+
+    monkeypatch.setattr(vetorizacao, "modelo_esta_no_disco", lambda: True)
+    monkeypatch.setattr(vetorizacao, "resolver_dispositivo", lambda: "cuda")
+    monkeypatch.setattr(
+        vetorizacao, "vetorizar", lambda dispositivo, textos: ([[0.1] * 1024] * len(textos), 5)
+    )
+
+    resposta = cliente.post(
+        "/v1/embeddings",
+        json={"model": "intfloat/multilingual-e5-large", "input": ["passage: a", "passage: b"]},
+        headers=cabecalhos,
+    )
+
+    assert resposta.status_code == 200
+    assert _forma(_exemplo("vetorizacao-resposta.json")) <= _forma(resposta.json())
+
+
+def test_a_resposta_de_legenda_tem_a_forma_publicada(cliente, cabecalhos, monkeypatch):
+    import types
+
+    import youtube
+
+    legenda = types.SimpleNamespace(language_code="pt", is_generated=True)
+    trechos = [types.SimpleNamespace(start=0.0, duration=4.2, text="Ola.")]
+    monkeypatch.setattr(youtube, "buscar_legenda", lambda video, idiomas: (legenda, trechos))
+
+    resposta = cliente.post(
+        "/v1/youtube/legenda", json={"video_id": "dQw4w9WgXcQ"}, headers=cabecalhos
+    )
+
+    assert resposta.status_code == 200
+    assert _forma(_exemplo("youtube-legenda-resposta.json")) <= _forma(resposta.json())
+
+
 def test_a_resposta_de_conversao_tem_a_forma_publicada(cliente, cabecalhos):
     resposta = cliente.post(
         "/parse/", files={"file": ("a.pdf", b"%PDF", "application/pdf")}, headers=cabecalhos

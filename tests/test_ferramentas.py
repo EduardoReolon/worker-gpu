@@ -12,7 +12,7 @@ import os
 
 import pytest
 
-FERRAMENTAS = ("bancada", "medir_imagem", "baixar_modelo")
+FERRAMENTAS = ("bancada", "medir_imagem", "baixar_modelo", "conferir_vetorizacao")
 
 
 @pytest.fixture

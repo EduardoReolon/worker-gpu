@@ -68,7 +68,16 @@ def worker(ambiente):
     # por `texto`. Recarregar fora de ordem deixaria `texto` apontando para um
     # `modelos` velho, com o cache de modelos no disco de outro teste dentro.
     modulos = _recarregar(
-        "ollama", "modelos", "texto", "prazo", "imagem", "conversao", "transcricao", "app"
+        "ollama",
+        "modelos",
+        "texto",
+        "prazo",
+        "imagem",
+        "conversao",
+        "transcricao",
+        "vetorizacao",
+        "youtube",
+        "app",
     )
     return modulos["app"]
 

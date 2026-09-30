@@ -121,12 +121,21 @@ def catalogo():
     ligada, o modelo de imagem — um cliente perguntando "o que da para usar"
     precisa ver os dois.
     """
-    from config import IMAGEM_ATIVA, IMAGEM_MODELO, TRANSCRICAO_ATIVA, TRANSCRICAO_MODELO
+    from config import (
+        IMAGEM_ATIVA,
+        IMAGEM_MODELO,
+        TRANSCRICAO_ATIVA,
+        TRANSCRICAO_MODELO,
+        VETORIZACAO_ATIVA,
+        VETORIZACAO_MODELO,
+    )
 
     nomes = list(ollama.modelos_no_disco())
     if IMAGEM_ATIVA:
         nomes.append(IMAGEM_MODELO)
     if TRANSCRICAO_ATIVA:
         nomes.append(TRANSCRICAO_MODELO)
+    if VETORIZACAO_ATIVA:
+        nomes.append(VETORIZACAO_MODELO)
 
     return {"object": "list", "data": [{"id": nome, "object": "model"} for nome in nomes]}

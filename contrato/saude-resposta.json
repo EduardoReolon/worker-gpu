@@ -1,12 +1,12 @@
 {
-  "_contrato_versao": "2.7",
+  "_contrato_versao": "2.8",
   "_rota": "GET /health/ (sem credencial, de proposito)",
-  "_nota": "Este endpoint NUNCA devolve 500. Um bloco que falha ao ser coletado vira {\"erro\": \"<tipo>: <mensagem>\"} no lugar do bloco, com HTTP 200 — o processo esta de pe, e e isso que o 200 afirma. Os blocos `imagem`, `conversao` e `transcricao` so aparecem quando a rota correspondente esta ligada (veja `rotas`).",
+  "_nota": "Este endpoint NUNCA devolve 500. Um bloco que falha ao ser coletado vira {\"erro\": \"<tipo>: <mensagem>\"} no lugar do bloco, com HTTP 200 — o processo esta de pe, e e isso que o 200 afirma. Os blocos `imagem`, `conversao`, `transcricao` e `vetorizacao` so aparecem quando a rota correspondente esta ligada (veja `rotas`).",
   "_nota_baixando": "Downloads de modelo em curso, normalmente lista vazia. Um download NAO aparece em `ocupada` porque nao usa a placa: ele e rede e disco, e a imagem e a conversao seguem funcionando enquanto ele acontece. Enquanto um modelo esta aqui, os pedidos dele levam 503 `baixando_modelo`.",
   "_nota_carregados": "`carregados` e a lista de NOMES e continua sendo `list[str]`. `carregados_detalhe` e o registro do `/api/ps` do Ollama repassado; o worker garante que cada item tem `name`, e o RESTO das chaves e do Ollama e varia com a versao dele. `context_length` e a janela com que o modelo foi carregado — e uma dica de MAQUINA, nao confirmacao de que um pedido especifico rodou com ela.",
   "status": "ok",
   "service": "worker-gpu",
-  "contrato_versao": "2.7",
+  "contrato_versao": "2.8",
   "ocupada": false,
   "ocupante": null,
   "modelo": null,
@@ -20,7 +20,9 @@
     "texto": true,
     "imagem": true,
     "conversao": true,
-    "transcricao": true
+    "transcricao": true,
+    "vetorizacao": true,
+    "youtube": true
   },
   "ollama": {
     "de_pe": true,
@@ -79,5 +81,20 @@
     "tempo_maximo": 1200,
     "tempo_travado": 1500,
     "max_bytes": 1073741824
+  },
+  "_nota_vetorizacao": "`baixado` false e `baixando` true: o modelo esta descendo em segundo plano, e os pedidos levam 503 `modelo_carregando`. `erro_download` e a ultima falha de download, ou null. `descarregar_ollama` e `sim`, `nao` ou `se_faltar` (tenta ao lado do modelo de texto e so o descarrega se a VRAM nao couber).",
+  "vetorizacao": {
+    "modelo": "intfloat/multilingual-e5-large",
+    "dispositivo": "auto",
+    "ultimo_dispositivo": "cuda",
+    "precisao": "float32",
+    "baixado": true,
+    "baixando": false,
+    "erro_download": null,
+    "carregado": false,
+    "lote": 32,
+    "ocioso_segundos": 600,
+    "tempo_travado": 300,
+    "descarregar_ollama": "se_faltar"
   }
 }

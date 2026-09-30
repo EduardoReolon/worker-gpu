@@ -13,6 +13,8 @@ Ollama:
     POST /v1/images/generations  imagem       (difusao)
     POST /parse/                 conversao    (Docling)
     POST /v1/audio/transcriptions transcricao (faster-whisper)
+    POST /v1/embeddings          vetorizacao  (multilingual-e5-large)
+    POST /v1/youtube/legenda     legenda      (sem placa)
     GET  /v1/models              catalogo
     GET  /health/                estado, sem credencial
 
@@ -54,8 +56,16 @@ import ollama
 import recursos
 import texto
 import transcricao
+import vetorizacao
+import youtube
 from arbitro import ARBITRO
-from config import CONVERSAO_ATIVA, IMAGEM_ATIVA, TRANSCRICAO_ATIVA
+from config import (
+    CONVERSAO_ATIVA,
+    IMAGEM_ATIVA,
+    TRANSCRICAO_ATIVA,
+    VETORIZACAO_ATIVA,
+    YOUTUBE_ATIVA,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(asctime)s %(name)s %(message)s")
 logger = logging.getLogger("worker-gpu")
@@ -64,7 +74,7 @@ logger = logging.getLogger("worker-gpu")
 # ai quem integra precisa olhar, e `INTEGRACAO.md` ganha uma secao.
 # Acrescentar campo nao quebra ninguem e nao sobe nada: todo cliente deve
 # ignorar o que nao conhece.
-CONTRATO_VERSAO = "2.7"
+CONTRATO_VERSAO = "2.8"
 
 app = FastAPI(title="worker-gpu", version=CONTRATO_VERSAO)
 
@@ -83,6 +93,14 @@ if TRANSCRICAO_ATIVA:
     # audio, e um `faster-whisper` ausente so apareceria ali.
     transcricao.conferir_configuracao()
     app.include_router(transcricao.router)
+
+if VETORIZACAO_ATIVA:
+    vetorizacao.conferir_configuracao()
+    app.include_router(vetorizacao.router)
+
+if YOUTUBE_ATIVA:
+    youtube.conferir_configuracao()
+    app.include_router(youtube.router)
 
 if CONVERSAO_ATIVA:
     # Conferido na subida, e nao na primeira conversao: um OCR pedido e
@@ -184,6 +202,8 @@ def health():
         "imagem": IMAGEM_ATIVA,
         "conversao": CONVERSAO_ATIVA,
         "transcricao": TRANSCRICAO_ATIVA,
+        "vetorizacao": VETORIZACAO_ATIVA,
+        "youtube": YOUTUBE_ATIVA,
     }
     # Memoria DESTE processo, e nao do sistema. E o campo que faltava: nesta
     # maquina quem foi para o swap foi o worker, nao o Ollama, e a suspeita
@@ -199,5 +219,7 @@ def health():
         corpo["conversao"] = _bloco("conversao", conversao.estado)
     if TRANSCRICAO_ATIVA:
         corpo["transcricao"] = _bloco("transcricao", transcricao.estado)
+    if VETORIZACAO_ATIVA:
+        corpo["vetorizacao"] = _bloco("vetorizacao", vetorizacao.estado)
 
     return corpo

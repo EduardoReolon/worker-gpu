@@ -89,6 +89,8 @@ Quatro códigos, e eles pedem coisas diferentes:
 | `sem_vram` | a placa não tem espaço agora | sim | idem, com paciência maior |
 | `timeout` | o trabalho passou do orçamento | **não** | **não repita igual** — reduza o pedido |
 | `baixando_modelo` | o modelo pedido não estava no disco e está sendo baixado | sim | reagendar; o `Retry-After` vem do progresso real |
+| `modelo_carregando` | o modelo de vetorização está descendo em segundo plano (primeira vez) | sim | reagendar |
+| `bloqueado` / `youtube_indisponivel` | só na legenda do YouTube: o YouTube recusou, ou não respondeu | sim | tentar do servidor, ou reagendar |
 
 **Todo 503 que sai do worker tem `error.code`.** Não existe 503 sem código:
 mesmo um 5xx vindo do Ollama é envelopado nesta forma antes de sair. Se você
@@ -441,6 +443,8 @@ o `arbitro.py` diz explicitamente que hoje ele não faz nada disso.
 | `/v1/chat/completions` | 600 s | `OLLAMA_TIMEOUT`, 540 s |
 | `/v1/images/generations` | 960 s | `IMAGEM_TEMPO_TRAVADO`, 900 s (a geração em si: `IMAGEM_TEMPO_MAXIMO`, 600 s) |
 | `/v1/audio/transcriptions` | 1800 s | `TRANSCRICAO_TEMPO_TRAVADO`, 1500 s (o áudio em si: `TRANSCRICAO_TEMPO_MAXIMO`, 1200 s) |
+| `/v1/embeddings` | 600 s | `VETORIZACAO_TEMPO_TRAVADO`, 300 s |
+| `/v1/youtube/legenda` | 120 s | `YOUTUBE_TIMEOUT`, 30 s por ida ao YouTube (são duas) |
 | `/parse/` | 600 s | sem teto |
 | `/health/` | 10 s | — |
 
@@ -605,6 +609,84 @@ trechos mudos.
 | grande demais | `413 arquivo_grande`, com `error.message` |
 
 Os 4xx desta rota trazem `error.message` **e** `detail`: leia qualquer um.
+
+### Vetorização (embeddings)
+
+```http
+POST /v1/embeddings
+Authorization: Bearer <segredo>
+
+{"model": "intfloat/multilingual-e5-large",
+ "input": ["passage: texto do paragrafo 1", "passage: texto do paragrafo 2"]}
+```
+
+```json
+{"object": "list",
+ "model": "intfloat/multilingual-e5-large",
+ "data": [{"object": "embedding", "index": 0, "embedding": [0.0123, -0.0456, ...]}],
+ "usage": {"prompt_tokens": 42, "total_tokens": 42}}
+```
+
+Exemplo em `contrato/vetorizacao-resposta.json`. Dialeto da OpenAI.
+
+- **`model` é conferido.** Tem que ser o da máquina (`vetorizacao.modelo` no
+  `/health/`); outro volta `422 modelo_errado`. Vetor de outro modelo no mesmo
+  índice estraga a busca sem aviso;
+- **`input` vai ao modelo como veio.** O prefixo `passage: ` que o e5 exige é
+  seu; o worker não acrescenta nada. Um texto solto (string) também vale;
+- **o vetor sai igual ao do `fastembed==0.8.0`**: mean pooling sobre a última
+  camada, **sem normalizar**, truncando em 512 tokens, em float32. Normalize
+  do seu lado se o seu índice precisa. Confira antes de ligar:
+  `./venv/bin/python conferir_vetorizacao.py --servidor vetor.json` na máquina
+  do worker (cosseno ≥ 0,999);
+- **primeira vez:** o modelo (~2 GB) desce em segundo plano e a resposta é
+  `503 modelo_carregando` com `Retry-After: 60`. Adie — não falhe e não apague
+  o índice antigo. Todos os pedidos no meio recebem o mesmo 503, e o download
+  é um só. Um download que falhou é lembrado por `FALHA_DE_DOWNLOAD_LEMBRADA`
+  (o `Retry-After` diz quando ele tenta de novo);
+- **o Ollama só é descarregado se faltar VRAM** (`descarregar_ollama:
+  se_faltar`): vetorizar leva segundos, e recarregar um modelo de texto grande
+  leva dezenas deles.
+
+| Situação | Resposta |
+|---|---|
+| modelo descendo | `503 modelo_carregando`, com `Retry-After` — adie |
+| placa ocupada / sem VRAM | `503 gpu_ocupada` / `sem_vram`, com `Retry-After` — adie |
+| outro `model`, `input` vazio, textos demais | `422 modelo_errado` / `entrada_invalida`, com `error.message` |
+| travado / outra falha | `500 worker_travado` / `falha_na_vetorizacao` — falha |
+
+### Legenda do YouTube
+
+```http
+POST /v1/youtube/legenda
+Authorization: Bearer <segredo>
+
+{"video_id": "dQw4w9WgXcQ", "idiomas": ["pt", "pt-BR", "en"]}
+```
+
+```json
+{"video_id": "dQw4w9WgXcQ",
+ "idioma": "pt",
+ "gerada_automaticamente": true,
+ "segmentos": [{"start": 0.0, "duration": 4.2, "text": "Olá."}]}
+```
+
+Exemplo em `contrato/youtube-legenda-resposta.json`. **Não usa a placa** —
+nunca leva `gpu_ocupada`. Existe porque o YouTube recusa legenda para IP de
+nuvem e esta máquina está numa conexão residencial. Mesma biblioteca do
+servidor (`youtube-transcript-api` 1.x).
+
+Devolve a primeira legenda que existir na ordem de `idiomas`; dentro de cada
+idioma, a **manual antes da automática**. A ordem é sua: `pt` automática vence
+`en` manual se `pt` vem primeiro.
+
+| Situação | Resposta | O que fazer |
+|---|---|---|
+| nenhum dos idiomas; legendas desligadas; restrição de idade; vídeo não reproduzível | `404 sem_legenda` | "aguardando o áudio" |
+| o vídeo não existe ou foi removido | `404 video_indisponivel` | desistir: não há legenda nem áudio |
+| o YouTube recusou também daqui | `503 bloqueado`, `Retry-After: 3600` | tentar do servidor |
+| rede, tempo esgotado, resposta estranha | `503 youtube_indisponivel`, `Retry-After: 300` | tentar do servidor, ou adiar |
+| id que não é do YouTube | `422 video_id_invalido` | falha |
 
 ### Conversão de documentos (Docling)
 
@@ -785,6 +867,19 @@ pontos merecem olhada:
   cabeçalho — a única forma de 503 que saía daqui sem nada para decidir;
 - **`/health/` ganhou `ollama.carregados_detalhe`** e passou a nunca responder
   500. `ollama.carregados` continua sendo a lista de nomes, intocada;
+## O que mudou na 2.8
+
+Só acréscimos:
+
+- **rota nova, `POST /v1/embeddings`**: vetorização de passagens com o
+  `multilingual-e5-large`, vetor igual ao do `fastembed==0.8.0`. Veja
+  **Vetorização**. Código novo de 503: `modelo_carregando` (adie);
+- **rota nova, `POST /v1/youtube/legenda`**, sem placa. Códigos novos: `404
+  sem_legenda`, `404 video_indisponivel`, `503 bloqueado`, `503
+  youtube_indisponivel`. Veja **Legenda do YouTube**;
+- `/health/` ganhou o bloco `vetorizacao`, `rotas.vetorizacao` e
+  `rotas.youtube`; `/v1/models` lista o modelo de vetorização.
+
 ## O que mudou na 2.7
 
 Só acréscimos:
@@ -899,6 +994,8 @@ Só a rota de imagem, e é sobre qualidade:
 - [ ] Timeout de imagem **maior que `imagem.tempo_travado`** (960 s)
 - [ ] Sem `stream: true`
 - [ ] Transcrição com timeout de **1800 s**, e `503 timeout` nela é falha, não adiamento
+- [ ] Vetorização: `503 modelo_carregando` **adia**; `model` igual ao do `/health/`; conformidade conferida antes de ligar
+- [ ] Legenda: `404 video_indisponivel` desiste; `503 bloqueado`/`youtube_indisponivel` tenta do servidor
 - [ ] Timeout do cliente **maior** que `OLLAMA_TIMEOUT`, não igual
 - [ ] Janela de contexto por pedido em `options.num_ctx` (não precisa de Modelfile)
 - [ ] Truncamento monitorado por `usage.prompt_tokens`

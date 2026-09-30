@@ -16,10 +16,13 @@ Por isso **tudo** entra por aqui, inclusive o texto:
 | `POST /v1/images/generations` | imagem — difusão |
 | `POST /parse/` | PDF, DOCX, PPTX ou XLSX para Markdown (Docling) |
 | `POST /v1/audio/transcriptions` | áudio para texto com tempos (Whisper) |
+| `POST /v1/embeddings` | vetores de passagens (multilingual-e5-large) |
+| `POST /v1/youtube/legenda` | legenda de vídeo do YouTube — **sem placa**, fora do lock |
 | `GET /v1/models` | catálogo |
 | `GET /health/` | estado, sem credencial |
 
-Todas as de `POST` disputam **um lock só**. Quem não pega recebe `503` com
+Todas as de `POST` que usam modelo disputam **um lock só** (a legenda do
+YouTube não usa a placa e fica de fora). Quem não pega recebe `503` com
 `Retry-After` calculado.
 
 > Integrando um cliente? **[`INTEGRACAO.md`](INTEGRACAO.md)** tem o guia

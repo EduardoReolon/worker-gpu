@@ -62,6 +62,11 @@ ctranslate2>=4.6.3,<5
 # lugar onde este worker roda com placa.
 nvidia-cublas-cu12; sys_platform == "linux"
 
+# --- YouTube ----------------------------------------------------------------
+# A MESMA biblioteca do servidor do PubliBot, para a legenda sair igual pelos
+# dois caminhos. A vetorizacao nao pede nada novo: e torch + transformers.
+youtube-transcript-api>=1.2,<2
+
 # Quantizacao em 4/8 bits (`IMAGEM_QUANTIZAR`). E o que faz um modelo de 6B,
 # como o Z-Image-Turbo, caber numa placa de 8 GB. 0.48: antes dela o 8 bits
 # nao sai da placa, e o `enable_model_cpu_offload` o pula.

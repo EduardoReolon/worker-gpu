@@ -120,6 +120,22 @@ def main() -> int:
             print(f"ERRO ao baixar o Whisper {whisper}: {erro}", file=sys.stderr)
             return 1
 
+    ativa = os.environ.get("VETORIZACAO_ATIVA", "sim").strip().lower()
+    e5 = os.environ.get("VETORIZACAO_MODELO", "intfloat/multilingual-e5-large").strip()
+    if ativa in {"1", "true", "yes", "sim", "on"} and not os.path.isdir(e5):
+        # O worker tambem baixa sozinho no primeiro pedido (503
+        # `modelo_carregando`), mas assim a primeira indexacao ja sai.
+        print(f"Baixando o vetorizador {e5} ...")
+        try:
+            from huggingface_hub import snapshot_download
+
+            from vetorizacao import ARQUIVOS_DO_MODELO
+
+            snapshot_download(e5, allow_patterns=ARQUIVOS_DO_MODELO)
+        except Exception as erro:
+            print(f"ERRO ao baixar o vetorizador {e5}: {erro}", file=sys.stderr)
+            return 1
+
     print(f"Pronto em {time.perf_counter() - inicio:.0f}s. O cache esta em ~/.cache/huggingface.")
     print("A primeira geracao (e a primeira transcricao) agora so le do disco.")
     return 0

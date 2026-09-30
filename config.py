@@ -298,6 +298,57 @@ OLLAMA_DESCARREGAR_PARA_TRANSCRICAO = _booleano("OLLAMA_DESCARREGAR_PARA_TRANSCR
 
 
 # ---------------------------------------------------------------------------
+# Vetorizacao (embeddings)
+# ---------------------------------------------------------------------------
+VETORIZACAO_ATIVA = _booleano("VETORIZACAO_ATIVA", True)
+
+# O MESMO modelo do servidor do PubliBot, e o nome e conferido em cada pedido:
+# vetor de outro modelo no mesmo indice estraga a busca sem erro nenhum.
+VETORIZACAO_MODELO = os.environ.get("VETORIZACAO_MODELO", "intfloat/multilingual-e5-large").strip()
+
+# `auto` usa a placa se o torch a enxergar.
+VETORIZACAO_DEVICE = os.environ.get("VETORIZACAO_DEVICE", "auto").strip().lower()
+
+# float32 e nao float16, por fidelidade: o vetor daqui entra no MESMO indice
+# que o do servidor (fastembed, ONNX, float32), e o teste de conformidade pede
+# cosseno >= 0,999. Em float32 o e5-large ocupa ~2,2 GB de VRAM.
+VETORIZACAO_DTYPE = os.environ.get("VETORIZACAO_DTYPE", "float32").strip().lower()
+
+# Textos por lote na placa. 32 paragrafos de 512 tokens cabem com folga.
+VETORIZACAO_LOTE = _inteiro("VETORIZACAO_LOTE", 32)
+
+# Teto de textos por pedido. Um documento sao de 1 a algumas centenas.
+VETORIZACAO_MAXIMO_TEXTOS = _inteiro("VETORIZACAO_MAXIMO_TEXTOS", 4096)
+
+VETORIZACAO_OCIOSO_SEGUNDOS = _inteiro("VETORIZACAO_OCIOSO_SEGUNDOS", 600)
+
+# Prazo DURO (carga + vetorizacao). Um documento leva segundos; o cliente
+# espera 600 s, e o 500 legivel tem que chegar antes.
+VETORIZACAO_TEMPO_TRAVADO = _inteiro("VETORIZACAO_TEMPO_TRAVADO", 300)
+
+# Soltar o modelo de texto do Ollama antes de vetorizar: `sim`, `nao`, ou
+# `se_faltar` — tenta ao lado dele e so descarrega se a VRAM nao couber.
+# `se_faltar` e o padrao porque vetorizar leva segundos, e recarregar um 30B
+# depois leva dezenas deles: descarregar a cada documento seria trocar um
+# custo pequeno por um grande.
+OLLAMA_DESCARREGAR_PARA_VETORIZACAO = (
+    os.environ.get("OLLAMA_DESCARREGAR_PARA_VETORIZACAO", "se_faltar").strip().lower()
+)
+
+
+# ---------------------------------------------------------------------------
+# YouTube (legenda)
+# ---------------------------------------------------------------------------
+# Nao usa a placa. Existe porque o YouTube recusa legenda para IP de nuvem, e
+# esta maquina esta numa conexao residencial.
+YOUTUBE_ATIVA = _booleano("YOUTUBE_ATIVA", True)
+
+# Teto de cada ida ao YouTube, em segundos. A biblioteca nao tem nenhum: sem
+# este, uma conexao que para de responder prende a requisicao para sempre.
+YOUTUBE_TIMEOUT = _inteiro("YOUTUBE_TIMEOUT", 30)
+
+
+# ---------------------------------------------------------------------------
 # Arbitragem
 # ---------------------------------------------------------------------------
 # Quanto esperar pelo lock antes de devolver 503. Zero = recusa na hora.
@@ -317,4 +368,5 @@ DURACAO_ESTIMADA = {
     # Um audio de uma hora leva alguns minutos. O `Retry-After` encolhe com o
     # tempo decorrido, entao errar para cima so custa a primeira espera.
     "transcricao": _inteiro("ESTIMATIVA_TRANSCRICAO", 300),
+    "vetorizacao": _inteiro("ESTIMATIVA_VETORIZACAO", 15),
 }

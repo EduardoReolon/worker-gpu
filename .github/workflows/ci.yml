@@ -24,7 +24,7 @@ jobs:
         # So o que o app precisa para importar e responder. A lista e curta de
         # proposito: se ela crescer, e sinal de que algo pesado vazou para o
         # caminho das rotas.
-        run: pip install fastapi==0.121.2 python-multipart==0.0.20 httpx==0.28.1 pytest==8.4.2 ruff==0.14.2
+        run: pip install fastapi==0.121.2 python-multipart==0.0.20 httpx==0.28.1 pytest==8.4.2 ruff==0.14.2 "youtube-transcript-api>=1.2,<2"
 
       - name: Lint
         run: |

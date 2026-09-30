@@ -1,0 +1,13 @@
+{
+  "_contrato_versao": "2.8",
+  "_rota": "POST /v1/embeddings  {\"model\": \"intfloat/multilingual-e5-large\", \"input\": [\"passage: ...\"]}",
+  "_nota": "Dialeto da OpenAI. `model` e CONFERIDO: outro nome volta 422 `modelo_errado`, porque vetor de outro modelo no mesmo indice estraga a busca. `input` vai ao modelo como veio — o prefixo `passage: ` e do cliente. Um vetor por texto, na ordem, com 1024 numeros, NAO normalizados (mean pooling, como o fastembed 0.8 do servidor). O exemplo mostra so 3 numeros.",
+  "_nota_erros": "503 `modelo_carregando` (com Retry-After) enquanto o modelo e baixado em segundo plano na primeira vez — adie, nao falhe. 503 `gpu_ocupada`/`sem_vram` com Retry-After. 422 `modelo_errado`/`entrada_invalida` com `error.message`. 500 `worker_travado`/`falha_na_vetorizacao` e falha.",
+  "object": "list",
+  "model": "intfloat/multilingual-e5-large",
+  "data": [
+    {"object": "embedding", "index": 0, "embedding": [0.0123, -0.0456, 0.0789]},
+    {"object": "embedding", "index": 1, "embedding": [0.0321, -0.0654, 0.0987]}
+  ],
+  "usage": {"prompt_tokens": 42, "total_tokens": 42}
+}
