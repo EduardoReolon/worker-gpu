@@ -63,6 +63,19 @@ OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
 # ele desiste devolvendo um 503 legivel em vez de um socket cortado.
 OLLAMA_TIMEOUT = _decimal("OLLAMA_TIMEOUT", 540.0)
 
+# Janela de contexto do modelo de texto, em tokens (`options.num_ctx`).
+#
+# O Ollama carrega com 4096 por padrao, e um pedido maior volta 400 —
+# planejar um artigo manda ~5 mil tokens. O cliente diz quanto precisa no
+# cabecalho `X-PubliBot-Contexto`; sem ele vale o PADRAO. O worker nunca baixa
+# a janela de um pedido para o outro (cada troca recarrega o modelo) e nunca
+# passa do MAXIMO, que e o que esta maquina aguenta: acima da VRAM o Ollama
+# poe camadas na CPU, e a geracao fica muito mais lenta.
+#
+# 0 no PADRAO desliga: pedido sem cabecalho vai sem `num_ctx`, como antes.
+CONTEXTO_PADRAO = _inteiro("CONTEXTO_PADRAO", 16384)
+CONTEXTO_MAXIMO = _inteiro("CONTEXTO_MAXIMO", 32768)
+
 # Baixar sozinho um modelo pedido que nao esta no disco.
 #
 # Ligado: com um modelo por inquilino, lembrar de dar `ollama pull` em cada um

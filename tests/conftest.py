@@ -69,6 +69,7 @@ def worker(ambiente):
     # `modelos` velho, com o cache de modelos no disco de outro teste dentro.
     modulos = _recarregar(
         "ollama",
+        "contexto",
         "modelos",
         "texto",
         "prazo",

@@ -49,6 +49,7 @@ import logging
 
 from fastapi import FastAPI
 
+import contexto
 import conversao
 import imagem
 import modelos
@@ -74,7 +75,7 @@ logger = logging.getLogger("worker-gpu")
 # ai quem integra precisa olhar, e `INTEGRACAO.md` ganha uma secao.
 # Acrescentar campo nao quebra ninguem e nao sobe nada: todo cliente deve
 # ignorar o que nao conhece.
-CONTRATO_VERSAO = "2.8"
+CONTRATO_VERSAO = "2.9"
 
 app = FastAPI(title="worker-gpu", version=CONTRATO_VERSAO)
 
@@ -154,6 +155,9 @@ def _bloco_do_ollama() -> dict:
         # worker travado — e o download nao aparece em `ocupada`, porque ele
         # nao usa a placa.
         "baixando": modelos.estado(),
+        # A janela de contexto: `atual` e a do modelo carregado, lida do
+        # `/api/ps`; `segue_cabecalho` diz que o `X-PubliBot-Contexto` vale.
+        "contexto": contexto.estado(detalhe),
     }
 
 

@@ -289,7 +289,51 @@ aí o comportamento volta a ser o antigo: o Ollama responde 404 na hora.
 
 ### A janela de contexto, por pedido
 
-**Funciona: mande `options.num_ctx` no corpo.**
+**O jeito preferido: diga quanto o pedido precisa no cabeçalho.**
+
+```http
+POST /v1/chat/completions
+X-PubliBot-Contexto: 16384
+```
+
+O valor é a janela, em tokens, que este pedido precisa (prompt + resposta). O
+worker decide o `num_ctx` assim:
+
+1. **o seu pedido**: o cabeçalho, ou `options.num_ctx` se for maior. Sem
+   nenhum dos dois (ou com um valor inválido), vale o padrão da máquina,
+   `ollama.contexto.padrao` no `/health/` (16384);
+2. **nunca menor que a já usada** para aquele modelo: cada troca de `num_ctx`
+   faz o Ollama **recarregar** o modelo, e um pedido pequeno depois de um
+   grande reaproveita a carga;
+3. **nunca maior que o teto da máquina**, `ollama.contexto.maximo` (32768).
+   Acima da VRAM o Ollama não recusa: põe camadas na CPU e fica muitas vezes
+   mais lento.
+
+Isso vale para **todo** pedido de texto, com ou sem cabeçalho: dois clientes no
+mesmo modelo com janelas diferentes fariam o Ollama recarregar a cada
+alternância.
+
+**Se o pedido não couber nem no teto**, a resposta é `400` na forma do
+llama.cpp, e a mensagem original vai junto:
+
+```json
+{"error": {"code": 400, "type": "exceed_context_size_error",
+           "message": "request (40000 tokens) exceeds the available context size (32768 tokens)",
+           "n_prompt_tokens": 40000, "n_ctx": 32768}}
+```
+
+Isso é falha do pedido, não da hora: reduza o pedido; repetir igual dá o mesmo
+400.
+
+O `/health/` declara o arranjo em `ollama.contexto`:
+
+```json
+{"padrao": 16384, "atual": 16384, "maximo": 32768, "segue_cabecalho": true}
+```
+
+`atual` é a janela do modelo carregado agora (0 se nenhum), lida do Ollama.
+
+**Também funciona: mande `options.num_ctx` no corpo.**
 
 ```json
 {"model": "qwen2.5:7b-instruct",
@@ -299,11 +343,10 @@ aí o comportamento volta a ser o antigo: o Ollama responde 404 na hora.
  "max_tokens": 800}
 ```
 
-Não é o dialeto da OpenAI — é o do Ollama, e é de propósito. O worker olha o
-seu pedido: se ele traz `options` (ou `keep_alive`), o pedido vai pelo
-`/api/chat` do Ollama, onde esses campos existem; se não traz, segue pelo
-`/v1/chat/completions`, exatamente como antes. A **resposta é a mesma nos dois
-casos** — você não precisa saber qual caminho o seu pedido tomou, e um teste do
+Não é o dialeto da OpenAI — é o do Ollama, e é de propósito. Um pedido com
+`options` (ou `keep_alive`) vai pelo `/api/chat` do Ollama, onde esses campos
+existem — e, com a janela decidida pelo worker, isso é praticamente todo
+pedido. A **resposta é a mesma pelos dois caminhos** — você não precisa saber qual caminho o seu pedido tomou, e um teste do
 worker garante que as duas formas não divergem.
 
 Por que isso não era assim antes: a camada compatível do Ollama desserializa o
@@ -867,6 +910,18 @@ pontos merecem olhada:
   cabeçalho — a única forma de 503 que saía daqui sem nada para decidir;
 - **`/health/` ganhou `ollama.carregados_detalhe`** e passou a nunca responder
   500. `ollama.carregados` continua sendo a lista de nomes, intocada;
+## O que mudou na 2.9
+
+- **cabeçalho novo, `X-PubliBot-Contexto`**, em `/v1/chat/completions`: a
+  janela que o pedido precisa. Veja **A janela de contexto, por pedido**;
+- **todo pedido de texto passa a levar `num_ctx`** (o padrão da máquina,
+  16384, sem cabeçalho), e por isso vai pelo `/api/chat` nativo. A forma da
+  resposta não muda;
+- **400 de contexto excedido** sai na forma do llama.cpp
+  (`exceed_context_size_error`, `n_prompt_tokens`, `n_ctx`);
+- `/health/` ganhou `ollama.contexto` (`padrao`, `atual`, `maximo`,
+  `segue_cabecalho`).
+
 ## O que mudou na 2.8
 
 Só acréscimos:
@@ -993,6 +1048,7 @@ Só a rota de imagem, e é sobre qualidade:
 - [ ] Conexão **cortada** no meio é falha; conexão **recusada** adia com teto
 - [ ] Timeout de imagem **maior que `imagem.tempo_travado`** (960 s)
 - [ ] Sem `stream: true`
+- [ ] `X-PubliBot-Contexto` em todo pedido de texto; `400 exceed_context_size_error` é falha (reduza o pedido)
 - [ ] Transcrição com timeout de **1800 s**, e `503 timeout` nela é falha, não adiamento
 - [ ] Vetorização: `503 modelo_carregando` **adia**; `model` igual ao do `/health/`; conformidade conferida antes de ligar
 - [ ] Legenda: `404 video_indisponivel` desiste; `503 bloqueado`/`youtube_indisponivel` tenta do servidor

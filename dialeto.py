@@ -29,14 +29,12 @@ recomendacao. Ela tem tres custos que a traducao nao tem:
 
 ## Quando o nativo entra
 
-**So quando o pedido traz algo que a camada compativel descartaria** — hoje
-`options` ou `keep_alive`. Quem nao manda nenhum dos dois segue pelo caminho
-antigo, byte por byte, e nao corre risco nenhum desta traducao.
-
-E deliberado: ha dois clientes em producao, e um deles nao precisa disto. A
-troca e ter dois caminhos para manter em vez de um; o ganho e que o cliente que
-nao pediu nada nao paga por uma traducao que eu poderia ter escrito errado.
-Quando os dois estiverem exercitados, unificar e mudar uma linha.
+**Quando o pedido traz algo que a camada compativel descartaria** — `options`
+ou `keep_alive`. Com o contrato de contexto (`contexto.py`), isso passou a ser
+QUASE TODO pedido: o worker poe `options.num_ctx` em cada um, porque dois
+clientes no mesmo modelo com janelas diferentes fariam o Ollama recarregar a
+cada alternancia. O caminho compativel so sobra com `CONTEXTO_PADRAO=0` e sem
+o cabecalho `X-PubliBot-Contexto`.
 
 ## O que a traducao NAO cobre
 

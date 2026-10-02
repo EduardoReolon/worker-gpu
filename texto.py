@@ -13,9 +13,10 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import JSONResponse
 
+import contexto
 import modelos
 import ollama
 import respostas
@@ -40,7 +41,10 @@ STATUS_TRANSITORIOS_DO_OLLAMA = (502, 503, 504)
 
 
 @router.post("/v1/chat/completions", dependencies=[Depends(conferir)])
-def chat(corpo: dict):
+def chat(
+    corpo: dict,
+    x_publibot_contexto: str | None = Header(default=None),
+):
     """Gera texto. `def` e nao `async def`: a chamada ao Ollama bloqueia, e no
     event loop ela congelaria o processo inteiro — inclusive o `/health/`."""
     if not isinstance(corpo, dict) or not corpo.get("messages"):
@@ -69,6 +73,10 @@ def chat(corpo: dict):
         # sozinho. Um 503 aqui poria o cliente a reagendar para sempre.
         return JSONResponse({"error": {"message": str(erro)}}, status_code=404)
 
+    # A janela de contexto: o que o pedido diz que precisa, nunca menor que a
+    # ja carregada, nunca maior que o teto da maquina. Veja `contexto.py`.
+    corpo, janela = contexto.aplicar(corpo, x_publibot_contexto)
+
     try:
         # O modelo vem do cliente, intacto. Quem chama decide — o CRM tem um
         # modelo por tenant, o PubliBot tem o da conexao. Anota-lo no arbitro
@@ -88,6 +96,14 @@ def chat(corpo: dict):
 
     if status in STATUS_TRANSITORIOS_DO_OLLAMA:
         return respostas.indisponivel("ollama_indisponivel", _mensagem_do_ollama(status, dados))
+
+    # O pedido nao coube nem no teto: o 400 sai na forma do llama.cpp, que e o
+    # que o cliente sabe ler para dizer "tem X tokens, cabem Y".
+    excedido = contexto.erro_de_contexto(status, dados, janela)
+    if excedido is not None:
+        return JSONResponse(excedido, status_code=400)
+    if status == 200:
+        contexto.avisar_se_encheu(dados, janela)
 
     # Todo o resto vai VERBATIM, status e corpo. Um 404 de modelo inexistente e
     # um 400 de `json_schema` invalido sao respostas certas para o cliente:

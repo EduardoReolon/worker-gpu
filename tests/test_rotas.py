@@ -457,12 +457,16 @@ def test_o_num_ctx_do_cliente_chega_ao_ollama(worker, cabecalhos, monkeypatch):
     assert resposta.json()["usage"]["prompt_tokens"] == 9000
 
 
-def test_sem_options_o_caminho_antigo_nao_muda(worker, cabecalhos, monkeypatch):
-    """Ha dois clientes em producao e um deles nao manda `options`. Ele nao
-    deve pagar pelo risco de uma traducao que nao pediu."""
+def test_sem_janela_o_caminho_antigo_nao_muda(worker, cabecalhos, monkeypatch):
+    """Com `CONTEXTO_PADRAO=0` e sem cabecalho, nada pede `num_ctx`: o pedido
+    segue pela camada compativel, byte por byte, como antes do contrato de
+    contexto."""
     import httpx
 
+    import contexto
     import ollama
+
+    monkeypatch.setattr(contexto, "CONTEXTO_PADRAO", 0)
 
     visto = {}
 

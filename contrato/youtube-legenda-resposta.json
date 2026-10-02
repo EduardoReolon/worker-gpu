@@ -1,5 +1,5 @@
 {
-  "_contrato_versao": "2.8",
+  "_contrato_versao": "2.9",
   "_rota": "POST /v1/youtube/legenda  {\"video_id\": \"dQw4w9WgXcQ\", \"idiomas\": [\"pt\", \"pt-BR\", \"en\"]}",
   "_nota": "Nao usa a placa: nunca leva `gpu_ocupada`. A primeira legenda que existir na ordem de `idiomas`; dentro de cada idioma, a manual antes da automatica. `start` e `duration` em segundos.",
   "_nota_erros": "404 `sem_legenda` (nenhum dos idiomas, legendas desligadas, restricao de idade, video nao reproduzivel) — o candidato vai para 'aguardando o audio'. 404 `video_indisponivel` — o video nao existe ou foi removido: nem legenda nem audio. 503 `bloqueado` (o YouTube recusou tambem daqui) e 503 `youtube_indisponivel` (rede, tempo esgotado) — os dois com Retry-After; tente do servidor. 422 `video_id_invalido`.",
