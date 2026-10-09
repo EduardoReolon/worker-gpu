@@ -18,7 +18,6 @@ que nao e audio.
 from __future__ import annotations
 
 import ctypes
-import gc
 import importlib.util
 import logging
 import tempfile
@@ -31,6 +30,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 
 import ollama
 import prazo
+import recursos
 import respostas
 from arbitro import ARBITRO, GpuOcupada
 from config import (
@@ -207,7 +207,7 @@ def _descarregar_sem_trava() -> None:
     _modelo = None
     _dispositivo_do_modelo = ""
     # O CTranslate2 solta a VRAM quando o modelo e coletado.
-    gc.collect()
+    recursos.devolver_memoria("Whisper")
 
 
 def descarregar() -> None:

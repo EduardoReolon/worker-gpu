@@ -121,3 +121,71 @@ def test_o_health_sobrevive_a_uma_leitura_que_estoura(worker, monkeypatch):
 
     assert resposta.status_code == 200
     assert "erro" in resposta.json()["memoria"]
+
+
+# ---------------------------------------------------------------------------
+# Devolver a memoria ao sistema depois de descarregar
+# ---------------------------------------------------------------------------
+def test_o_malloc_trim_existe_nesta_libc():
+    """Sem ele, `gc.collect()` devolve a memoria ao alocador e nao ao sistema:
+    o RSS nao desce depois de descarregar um modelo."""
+    import sys
+
+    import recursos
+
+    if not sys.platform.startswith("linux"):
+        pytest.skip("malloc_trim e da glibc")
+    assert recursos._malloc_trim() is True
+
+
+def test_devolver_memoria_registra_o_antes_e_o_depois(caplog, monkeypatch):
+    import recursos
+
+    leituras = iter([9000.0, 2000.0])
+    monkeypatch.setattr(recursos, "_rss_mb", lambda: next(leituras))
+    monkeypatch.setattr(recursos, "_malloc_trim", lambda: True)
+
+    with caplog.at_level(logging.INFO, logger="worker-gpu.recursos"):
+        recursos.devolver_memoria("Modelo de imagem")
+
+    assert "Modelo de imagem descarregado: RSS de 9000 MB para 2000 MB" in caplog.text
+
+
+def test_devolver_memoria_nao_importa_o_torch(monkeypatch):
+    """Importar o torch so para esvaziar uma cache que nao existe custaria
+    segundos e centenas de MB."""
+    import sys
+
+    import recursos
+
+    monkeypatch.delitem(sys.modules, "torch", raising=False)
+    monkeypatch.setattr(recursos, "_malloc_trim", lambda: True)
+
+    recursos.devolver_memoria("teste")
+
+    assert "torch" not in sys.modules
+
+
+@pytest.mark.parametrize(
+    ("modulo", "global_", "rotulo"),
+    [
+        ("imagem", "_pipeline", "Modelo de imagem"),
+        ("transcricao", "_modelo", "Whisper"),
+        ("vetorizacao", "_modelo", "Vetorizador"),
+        ("conversao", "_conversor", "Docling"),
+    ],
+)
+def test_toda_descarga_devolve_a_memoria(worker, monkeypatch, modulo, global_, rotulo):
+    import importlib
+
+    import recursos
+
+    alvo = importlib.import_module(modulo)
+    vistos = []
+    monkeypatch.setattr(recursos, "devolver_memoria", lambda r: vistos.append(r))
+    monkeypatch.setattr(alvo, global_, object())
+
+    alvo.descarregar()
+
+    assert vistos == [rotulo]
+    assert getattr(alvo, global_) is None

@@ -24,7 +24,11 @@ com um palpite.
 
 from __future__ import annotations
 
+import ctypes
+import ctypes.util
+import gc
 import logging
+import sys
 
 logger = logging.getLogger("worker-gpu.recursos")
 
@@ -99,3 +103,55 @@ def esquecer_o_aviso() -> None:
     """So para os testes: o estado do aviso e de processo e vaza entre eles."""
     global _avisou_do_swap
     _avisou_do_swap = False
+
+
+def _rss_mb() -> float | None:
+    return memoria().get("rss_mb")
+
+
+def _malloc_trim() -> bool:
+    """Devolve ao sistema as paginas livres que o alocador da glibc segura.
+
+    `gc.collect()` solta os objetos, mas a memoria volta ao ALOCADOR, nao ao
+    sistema: o RSS do processo nao desce. Com pesos de modelo na RAM (o Z-Image
+    em 4 bits, o Docling, o Whisper), sao GB que o processo segura parados
+    depois da descarga — e que o kernel acaba escrevendo no swap.
+    `malloc_trim(0)` percorre todas as arenas e devolve o que esta livre.
+
+    Fora da glibc (musl, macOS) a funcao nao existe, e isto nao faz nada.
+    """
+    nome = ctypes.util.find_library("c")
+    if not nome:
+        return False
+    try:
+        libc = ctypes.CDLL(nome)
+        trim = libc.malloc_trim
+    except (OSError, AttributeError):
+        return False
+    trim.argtypes = [ctypes.c_size_t]
+    trim.restype = ctypes.c_int
+    trim(0)
+    return True
+
+
+def devolver_memoria(rotulo: str) -> None:
+    """Depois de descarregar um modelo: coleta, esvazia a cache da placa e
+    devolve a RAM ao sistema. Registra o RSS antes e depois, para a descarga
+    ser conferivel no journal em vez de presumida."""
+    antes = _rss_mb()
+    gc.collect()
+
+    # So se o torch ja estiver carregado: importa-lo aqui so para esvaziar uma
+    # cache que nao existe custaria segundos e centenas de MB.
+    torch = sys.modules.get("torch")
+    if torch is not None:
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception as erro:
+            logger.warning("Nao consegui esvaziar a cache da placa: %s", erro)
+
+    _malloc_trim()
+    depois = _rss_mb()
+    if antes is not None and depois is not None:
+        logger.info("%s descarregado: RSS de %.0f MB para %.0f MB.", rotulo, antes, depois)

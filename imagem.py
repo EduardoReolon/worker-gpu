@@ -28,7 +28,6 @@ tamanho para "economizar" nao economiza; o que muda o tempo e o modelo.
 from __future__ import annotations
 
 import base64
-import gc
 import importlib.util
 import io
 import logging
@@ -41,6 +40,7 @@ from pydantic import BaseModel, Field
 
 import ollama
 import prazo
+import recursos
 import respostas
 from arbitro import ARBITRO, GpuOcupada
 from config import (
@@ -442,15 +442,7 @@ def _descarregar_sem_trava() -> None:
     logger.info("Descarregando o modelo de imagem e devolvendo a placa.")
     _pipeline = None
     _dispositivo_do_pipeline = ""
-    gc.collect()
-
-    try:
-        import torch
-
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-    except ImportError:
-        pass
+    recursos.devolver_memoria("Modelo de imagem")
 
 
 def descarregar() -> None:

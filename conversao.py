@@ -12,7 +12,6 @@ trocar depois com uma linha no `.env`.
 
 from __future__ import annotations
 
-import gc
 import hashlib
 import hmac
 import importlib.util
@@ -25,6 +24,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, Header, HTTPException, UploadFile
 
+import recursos
 import respostas
 from arbitro import ARBITRO, GpuOcupada
 from config import (
@@ -140,7 +140,7 @@ def descarregar() -> None:
         logger.info("Descarregando o Docling e devolvendo a memoria dele.")
         _conversor = None
 
-    gc.collect()
+    recursos.devolver_memoria("Docling")
 
 
 def _agendar_descarga() -> None:

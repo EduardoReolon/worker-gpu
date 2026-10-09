@@ -35,6 +35,14 @@ LINHA_DE_USUARIO
 WorkingDirectory=RAIZ
 EnvironmentFile=RAIZ/.env
 
+# Duas arenas do alocador da glibc, e nao uma por thread (o padrao chega a
+# 8 x nucleos). Cada arena segura a propria memoria livre, e com o pool de
+# threads do servidor e as threads de prazo de cada trabalho, os GB que um
+# modelo descarregado soltou ficavam espalhados em arenas que nao devolviam
+# nada ao sistema. Junto com o `malloc_trim` das descargas, e o que faz o RSS
+# descer de verdade.
+Environment=MALLOC_ARENA_MAX=2
+
 # `--host` e `--port` vem do .env. Numa maquina que atende outras, precisam
 # ser o endereco da rede privada e NUNCA 0.0.0.0: um endpoint que roda modelo
 # na sua placa, aberto na internet, e placa de graca para quem achar a porta.

@@ -24,7 +24,6 @@ vem do cliente.
 
 from __future__ import annotations
 
-import gc
 import logging
 import threading
 import time
@@ -36,6 +35,7 @@ from pydantic import BaseModel
 
 import ollama
 import prazo
+import recursos
 import respostas
 from arbitro import ARBITRO, GpuOcupada
 from config import (
@@ -263,8 +263,7 @@ def _descarregar_sem_trava() -> None:
     _modelo = None
     _tokenizador = None
     _dispositivo_do_modelo = ""
-    gc.collect()
-    _liberar_placa()
+    recursos.devolver_memoria("Vetorizador")
 
 
 def descarregar() -> None:
