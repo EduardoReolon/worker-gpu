@@ -898,14 +898,15 @@ e Python 3.10. Quem instala é o próprio worker:
 - As versões são fixas: o commit do FramePack e o torch 2.6 com o
   torchvision 0.21. No torchvision mais novo, salvar o MP4 quebra no fim da
   geração.
-- Os modelos vão para `<FRAMEPACK_DIR>/hf_download`.
+- O FramePack fica em `framepack/`, dentro da pasta do worker e fora do git
+  (`.gitignore`), com o venv dele e os modelos em `framepack/hf_download`.
 
 **`.env` do worker:**
 
 ```bash
 ANIMACAO_ATIVA=sim
-FRAMEPACK_DIR=~/codes/FramePack          # padrao
-# ANIMACAO_PYTHON=~/codes/FramePack/venv/bin/python   # padrao
+# FRAMEPACK_DIR=<pasta do worker>/framepack   # padrao (fora do git)
+# ANIMACAO_PYTHON=<pasta do worker>/framepack/venv/bin/python   # padrao
 # ANIMACAO_RESOLUCAO=640    # 512 ou 480: bem mais rapido; o Instagram mostra menor
 # ANIMACAO_TEACACHE=sim
 # ANIMACAO_MEMORIA_PRESERVADA=6

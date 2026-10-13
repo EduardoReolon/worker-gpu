@@ -22,6 +22,10 @@ bancada/
 # Cache de modelo, quando alguem aponta o HF_HOME para ca.
 .model_cache/
 
+# O FramePack (animacao): instalado pelo deploy/instalar_animacao.sh, com o venv
+# e os ~30 GB de modelos dele. E de outro projeto, nao deste repositorio.
+framepack/
+
 # Caches de ferramenta.
 .ruff_cache/
 .pytest_cache/

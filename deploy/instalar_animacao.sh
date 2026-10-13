@@ -33,7 +33,8 @@ TORCH_INDICE="https://download.pytorch.org/whl/cu126"
 if [[ -f "$RAIZ/.env" ]]; then
     set -a; source <(grep -E '^[A-Z_]+=' "$RAIZ/.env"); set +a
 fi
-DESTINO="${FRAMEPACK_DIR:-$HOME/codes/FramePack}"
+# Padrao: dentro da pasta do worker (framepack/, fora do git).
+DESTINO="${FRAMEPACK_DIR:-$RAIZ/framepack}"
 DESTINO="${DESTINO/#\~/$HOME}"
 
 echo "==> FramePack em $DESTINO"
@@ -85,4 +86,5 @@ else
 fi
 
 echo
-echo "Pronto. No .env do worker: ANIMACAO_ATIVA=sim (FRAMEPACK_DIR=$DESTINO)."
+echo "Pronto. No .env do worker: ANIMACAO_ATIVA=sim."
+[[ "$DESTINO" == "$RAIZ/framepack" ]] || echo "  e FRAMEPACK_DIR=$DESTINO (fora do padrao)."

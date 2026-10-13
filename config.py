@@ -369,7 +369,13 @@ YOUTUBE_TIMEOUT = _inteiro("YOUTUBE_TIMEOUT", 30)
 # chama o `animar_framepack.py` com o Python daquele ambiente — as versoes que o
 # FramePack pede (torch 2.6, Python 3.10) nao convivem com as daqui.
 ANIMACAO_ATIVA = _booleano("ANIMACAO_ATIVA", False)
-FRAMEPACK_DIR = os.path.expanduser(os.environ.get("FRAMEPACK_DIR", "~/codes/FramePack"))
+# Dentro da pasta do worker (e fora do git, ver .gitignore): uma pasta so para
+# clonar, implantar e apagar. O `deploy/instalar_animacao.sh` instala aqui.
+FRAMEPACK_DIR = os.path.expanduser(
+    os.environ.get(
+        "FRAMEPACK_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "framepack")
+    )
+)
 ANIMACAO_PYTHON = os.path.expanduser(
     os.environ.get("ANIMACAO_PYTHON", os.path.join(FRAMEPACK_DIR, "venv", "bin", "python"))
 )

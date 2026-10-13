@@ -5,7 +5,7 @@ Python 3.10, que nao convivem com as versoes daqui. O worker (`animacao.py`)
 toma a placa no arbitro e chama este arquivo como processo separado:
 
     <FRAMEPACK_DIR>/venv/bin/python animar_framepack.py \\
-        --framepack-dir ~/codes/FramePack --imagem cena.png \\
+        --framepack-dir framepack --imagem cena.png \\
         --prompt "The man waves." --segundos 3 --saida clipe.mp4
 
 E o `worker()` do `demo_gradio.py` do FramePack (lllyasviel/FramePack), com os
