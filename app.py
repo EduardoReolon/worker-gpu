@@ -49,6 +49,7 @@ import logging
 
 from fastapi import FastAPI
 
+import animacao
 import contexto
 import conversao
 import imagem
@@ -61,6 +62,7 @@ import vetorizacao
 import youtube
 from arbitro import ARBITRO
 from config import (
+    ANIMACAO_ATIVA,
     CONVERSAO_ATIVA,
     IMAGEM_ATIVA,
     TRANSCRICAO_ATIVA,
@@ -75,7 +77,7 @@ logger = logging.getLogger("worker-gpu")
 # ai quem integra precisa olhar, e `INTEGRACAO.md` ganha uma secao.
 # Acrescentar campo nao quebra ninguem e nao sobe nada: todo cliente deve
 # ignorar o que nao conhece.
-CONTRATO_VERSAO = "2.9"
+CONTRATO_VERSAO = "2.10"
 
 app = FastAPI(title="worker-gpu", version=CONTRATO_VERSAO)
 
@@ -102,6 +104,12 @@ if VETORIZACAO_ATIVA:
 if YOUTUBE_ATIVA:
     youtube.conferir_configuracao()
     app.include_router(youtube.router)
+
+if ANIMACAO_ATIVA:
+    # O FramePack mora em outro ambiente: conferido na subida, para um
+    # FRAMEPACK_DIR errado nao virar 500 no primeiro pedido.
+    animacao.conferir_configuracao()
+    app.include_router(animacao.router)
 
 if CONVERSAO_ATIVA:
     # Conferido na subida, e nao na primeira conversao: um OCR pedido e
@@ -208,6 +216,7 @@ def health():
         "transcricao": TRANSCRICAO_ATIVA,
         "vetorizacao": VETORIZACAO_ATIVA,
         "youtube": YOUTUBE_ATIVA,
+        "animacao": ANIMACAO_ATIVA,
     }
     # Memoria DESTE processo, e nao do sistema. E o campo que faltava: nesta
     # maquina quem foi para o swap foi o worker, nao o Ollama, e a suspeita
@@ -225,5 +234,7 @@ def health():
         corpo["transcricao"] = _bloco("transcricao", transcricao.estado)
     if VETORIZACAO_ATIVA:
         corpo["vetorizacao"] = _bloco("vetorizacao", vetorizacao.estado)
+    if ANIMACAO_ATIVA:
+        corpo["animacao"] = _bloco("animacao", animacao.estado)
 
     return corpo

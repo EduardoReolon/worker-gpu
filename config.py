@@ -362,6 +362,36 @@ YOUTUBE_TIMEOUT = _inteiro("YOUTUBE_TIMEOUT", 30)
 
 
 # ---------------------------------------------------------------------------
+# Animacao (imagem para video, pelo FramePack)
+# ---------------------------------------------------------------------------
+# Desligada de padrao: precisa do FramePack instalado a parte, no ambiente
+# proprio dele (ver INTEGRACAO.md, "Animacao"). O worker so arbitra a placa e
+# chama o `animar_framepack.py` com o Python daquele ambiente — as versoes que o
+# FramePack pede (torch 2.6, Python 3.10) nao convivem com as daqui.
+ANIMACAO_ATIVA = _booleano("ANIMACAO_ATIVA", False)
+FRAMEPACK_DIR = os.path.expanduser(os.environ.get("FRAMEPACK_DIR", "~/codes/FramePack"))
+ANIMACAO_PYTHON = os.path.expanduser(
+    os.environ.get("ANIMACAO_PYTHON", os.path.join(FRAMEPACK_DIR, "venv", "bin", "python"))
+)
+# Lado maior do video, em px (o FramePack trabalha em 640). Menor = mais rapido;
+# o Instagram mostra o video menor que isso. Multiplo de 32.
+ANIMACAO_RESOLUCAO = _inteiro("ANIMACAO_RESOLUCAO", 640)
+ANIMACAO_PASSOS = _inteiro("ANIMACAO_PASSOS", 25)
+# TeaCache: bem mais rapido, um pouco menos fiel. Medido numa placa de 8 GB:
+# ~9,5 min por trecho de ~1,1 s em 704x544 com ele ligado.
+ANIMACAO_TEACACHE = _booleano("ANIMACAO_TEACACHE", True)
+# Quanto da VRAM o FramePack deixa livre ao subir o modelo (GB). Maior = mais
+# lento e mais folgado; em 8 GB, 6 funcionou (chegou a 7,7 GB).
+ANIMACAO_MEMORIA_PRESERVADA = _decimal("ANIMACAO_MEMORIA_PRESERVADA", 6.0)
+ANIMACAO_SEGUNDOS_MAXIMOS = _inteiro("ANIMACAO_SEGUNDOS_MAXIMOS", 5)
+# Teto de um trabalho. Passou: o processo do FramePack e encerrado e o trabalho
+# vira `failed` com `timeout`.
+ANIMACAO_TEMPO_MAXIMO = _inteiro("ANIMACAO_TEMPO_MAXIMO", 3600)
+# Por quanto tempo o video pronto fica para o cliente baixar.
+ANIMACAO_GUARDAR_SEGUNDOS = _inteiro("ANIMACAO_GUARDAR_SEGUNDOS", 6 * 3600)
+
+
+# ---------------------------------------------------------------------------
 # Arbitragem
 # ---------------------------------------------------------------------------
 # Quanto esperar pelo lock antes de devolver 503. Zero = recusa na hora.
@@ -382,4 +412,6 @@ DURACAO_ESTIMADA = {
     # tempo decorrido, entao errar para cima so custa a primeira espera.
     "transcricao": _inteiro("ESTIMATIVA_TRANSCRICAO", 300),
     "vetorizacao": _inteiro("ESTIMATIVA_VETORIZACAO", 15),
+    # Uns 20 minutos por 2,4 s de video numa placa de 8 GB.
+    "animacao": _inteiro("ESTIMATIVA_ANIMACAO", 1500),
 }

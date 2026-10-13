@@ -78,6 +78,7 @@ def worker(ambiente):
         "transcricao",
         "vetorizacao",
         "youtube",
+        "animacao",
         "app",
     )
     return modulos["app"]

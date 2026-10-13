@@ -845,6 +845,80 @@ dentro de uma requisição web do seu sistema: é trabalho de fila.
   O `sha256` volta na resposta de qualquer forma — guarde-o: é como você
   descobre depois que dois documentos do acervo são o mesmo arquivo.
 
+### Animação (imagem para vídeo, FramePack)
+
+O dialeto de vídeo da OpenAI (Sora), **assíncrono**: animar leva dezenas de
+minutos.
+
+```http
+POST /v1/videos
+Content-Type: multipart/form-data
+
+prompt=The man waves at the camera.   (o movimento, em inglês, curto)
+model=qualquer                        (ignorado: aqui é sempre o FramePack)
+seconds=3                             (1 a ANIMACAO_SEGUNDOS_MAXIMOS)
+size=720x1280                         (volta como veio)
+input_reference=<a imagem>
+```
+
+- **`200`**: o trabalho, com `id` e `status: queued`
+  (`contrato/video-resposta.json`). A placa já foi tomada; ninguém mais
+  entra até ele terminar.
+- **Placa ocupada:** `503` com `Retry-After`, como em qualquer rota. Tente de
+  novo depois, pela sua fila.
+- **`GET /v1/videos/{id}`**: `status` (`queued`, `in_progress`, `completed`,
+  `failed`), `progress` (0–100) e, se falhou, `error.code`:
+  - `timeout`: reduza os segundos;
+  - `sem_vram`;
+  - `falha_na_animacao`.
+- **`404 nao_encontrado`**: o worker reiniciou e esqueceu o trabalho. Peça de
+  novo.
+- **`GET /v1/videos/{id}/content`**: o MP4 (`409` se ainda não está pronto).
+  Fica guardado por `ANIMACAO_GUARDAR_SEGUNDOS` (6 h).
+
+**O que se mediu numa placa de 8 GB** (704×544, TeaCache ligado):
+- cerca de **9,5 min por trecho de ~1,1 s**; 2,4 s de vídeo em uns 20 min;
+- até **7,7 GB** de VRAM, com a RAM do sistema baixa.
+
+A qualidade foi boa no personagem principal. Movimentos de figuras pequenas,
+ao fundo, quase não saem: peça movimentos grandes e claros, de quem está em
+destaque.
+
+**Instalação** (o FramePack mora num ambiente próprio: ele pede torch 2.6 e
+Python 3.10):
+
+```bash
+cd ~/codes && git clone https://github.com/lllyasviel/FramePack && cd FramePack
+uv venv --python 3.10 venv && source venv/bin/activate
+uv pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 \
+    --index-url https://download.pytorch.org/whl/cu126
+uv pip install -r requirements.txt
+```
+
+Os modelos (mais de 30 GB) vão para `~/codes/FramePack/hf_download`. A página
+do FramePack (`python demo_gradio.py`) os baixa na primeira geração, e o
+worker usa os mesmos.
+
+**`.env` do worker:**
+
+```bash
+ANIMACAO_ATIVA=sim
+FRAMEPACK_DIR=~/codes/FramePack          # padrao
+# ANIMACAO_PYTHON=~/codes/FramePack/venv/bin/python   # padrao
+# ANIMACAO_RESOLUCAO=640    # 512 ou 480: bem mais rapido; o Instagram mostra menor
+# ANIMACAO_TEACACHE=sim
+# ANIMACAO_MEMORIA_PRESERVADA=6
+# ANIMACAO_TEMPO_MAXIMO=3600
+```
+
+**Como funciona por dentro:**
+1. O worker toma a placa e solta o Ollama e os modelos residentes (imagem,
+   transcrição, vetorização).
+2. Chama `animar_framepack.py` com o Python do FramePack, como processo
+   separado.
+3. O processo carrega os modelos a cada trabalho (alguns minutos a mais) e
+   devolve toda a memória ao terminar.
+
 ### Saúde
 
 `GET /health/`, sem credencial. Use para diagnóstico, não como teste de
@@ -910,6 +984,12 @@ pontos merecem olhada:
   cabeçalho — a única forma de 503 que saía daqui sem nada para decidir;
 - **`/health/` ganhou `ollama.carregados_detalhe`** e passou a nunca responder
   500. `ollama.carregados` continua sendo a lista de nomes, intocada;
+## O que mudou na 2.10
+
+- **rota nova, `/v1/videos`** (animação de uma imagem, pelo FramePack),
+  desligada de padrão (`ANIMACAO_ATIVA`). Veja **Animação**;
+- `/health/` ganhou `rotas.animacao` e, com a rota ligada, o bloco `animacao`.
+
 ## O que mudou na 2.9
 
 - **cabeçalho novo, `X-PubliBot-Contexto`**, em `/v1/chat/completions`: a
