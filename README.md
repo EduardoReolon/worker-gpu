@@ -62,7 +62,9 @@ python3 -c "import secrets; print(secrets.token_urlsafe(48))"   # WORKER_SHARED_
 # 4. Pesos do modelo de imagem: ~7 GB, uma vez.
 ./venv/bin/python baixar_modelo.py
 
-# 5. Unit do systemd + conferência de /health/.
+# 5. Unit do systemd + conferência de /health/. Com ANIMACAO_ATIVA=sim no
+#    .env, ele também instala o FramePack no ambiente dele
+#    (deploy/instalar_animacao.sh; os ~30 GB de modelos com --modelos).
 ./deploy/instalar.sh
 ```
 
