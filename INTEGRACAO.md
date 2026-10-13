@@ -884,20 +884,21 @@ A qualidade foi boa no personagem principal. Movimentos de figuras pequenas,
 ao fundo, quase não saem: peça movimentos grandes e claros, de quem está em
 destaque.
 
-**Instalação** (o FramePack mora num ambiente próprio: ele pede torch 2.6 e
-Python 3.10):
+**Instalação.** O FramePack mora num ambiente próprio, porque pede torch 2.6
+e Python 3.10. Quem instala é o próprio worker:
 
 ```bash
-cd ~/codes && git clone https://github.com/lllyasviel/FramePack && cd FramePack
-uv venv --python 3.10 venv && source venv/bin/activate
-uv pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 \
-    --index-url https://download.pytorch.org/whl/cu126
-uv pip install -r requirements.txt
+./deploy/instalar_animacao.sh            # clona o FramePack no commit medido, cria o venv dele
+./deploy/instalar_animacao.sh --modelos  # e ja baixa os modelos (~30 GB)
 ```
 
-Os modelos (mais de 30 GB) vão para `~/codes/FramePack/hf_download`. A página
-do FramePack (`python demo_gradio.py`) os baixa na primeira geração, e o
-worker usa os mesmos.
+- O `deploy/instalar.sh` chama esse script sozinho quando o `.env` tem
+  `ANIMACAO_ATIVA=sim`. Numa máquina formatada, basta clonar o worker,
+  preencher o `.env` e rodar o `instalar.sh`.
+- As versões são fixas: o commit do FramePack e o torch 2.6 com o
+  torchvision 0.21. No torchvision mais novo, salvar o MP4 quebra no fim da
+  geração.
+- Os modelos vão para `<FRAMEPACK_DIR>/hf_download`.
 
 **`.env` do worker:**
 

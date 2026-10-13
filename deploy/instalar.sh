@@ -192,6 +192,13 @@ elif [[ "$AVISO" != "nao" ]]; then
     exit 1
 fi
 
+# A animacao mora num ambiente a parte (FramePack). Com ela ligada no `.env`,
+# o ambiente e conferido — e instalado, se faltar —, para uma maquina
+# formatada voltar inteira so com este script.
+if [[ "${ANIMACAO_ATIVA:-nao}" =~ ^(1|true|yes|sim|on)$ ]]; then
+    "$RAIZ/deploy/instalar_animacao.sh"
+fi
+
 echo "==> Gerando a unit ($ESCOPO)"
 TEMPORARIO="$(mktemp)"
 trap 'rm -f "$TEMPORARIO"' EXIT
