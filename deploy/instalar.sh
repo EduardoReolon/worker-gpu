@@ -198,6 +198,9 @@ fi
 if [[ "${ANIMACAO_ATIVA:-nao}" =~ ^(1|true|yes|sim|on)$ ]]; then
     "$RAIZ/deploy/instalar_animacao.sh"
 fi
+if [[ "${VOZ_ATIVA:-nao}" =~ ^(1|true|yes|sim|on)$ ]]; then
+    "$RAIZ/deploy/instalar_voz.sh"
+fi
 
 echo "==> Gerando a unit ($ESCOPO)"
 TEMPORARIO="$(mktemp)"

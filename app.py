@@ -59,6 +59,7 @@ import recursos
 import texto
 import transcricao
 import vetorizacao
+import voz
 import youtube
 from arbitro import ARBITRO
 from config import (
@@ -67,6 +68,7 @@ from config import (
     IMAGEM_ATIVA,
     TRANSCRICAO_ATIVA,
     VETORIZACAO_ATIVA,
+    VOZ_ATIVA,
     YOUTUBE_ATIVA,
 )
 
@@ -77,7 +79,7 @@ logger = logging.getLogger("worker-gpu")
 # ai quem integra precisa olhar, e `INTEGRACAO.md` ganha uma secao.
 # Acrescentar campo nao quebra ninguem e nao sobe nada: todo cliente deve
 # ignorar o que nao conhece.
-CONTRATO_VERSAO = "2.10"
+CONTRATO_VERSAO = "2.11"
 
 app = FastAPI(title="worker-gpu", version=CONTRATO_VERSAO)
 
@@ -104,6 +106,11 @@ if VETORIZACAO_ATIVA:
 if YOUTUBE_ATIVA:
     youtube.conferir_configuracao()
     app.include_router(youtube.router)
+
+if VOZ_ATIVA:
+    # O Kokoro mora em outro ambiente: conferido na subida.
+    voz.conferir_configuracao()
+    app.include_router(voz.router)
 
 if ANIMACAO_ATIVA:
     # O FramePack mora em outro ambiente: conferido na subida, para um
@@ -217,6 +224,7 @@ def health():
         "vetorizacao": VETORIZACAO_ATIVA,
         "youtube": YOUTUBE_ATIVA,
         "animacao": ANIMACAO_ATIVA,
+        "voz": VOZ_ATIVA,
     }
     # Memoria DESTE processo, e nao do sistema. E o campo que faltava: nesta
     # maquina quem foi para o swap foi o worker, nao o Ollama, e a suspeita
@@ -236,5 +244,7 @@ def health():
         corpo["vetorizacao"] = _bloco("vetorizacao", vetorizacao.estado)
     if ANIMACAO_ATIVA:
         corpo["animacao"] = _bloco("animacao", animacao.estado)
+    if VOZ_ATIVA:
+        corpo["voz"] = _bloco("voz", voz.estado)
 
     return corpo

@@ -64,7 +64,8 @@ python3 -c "import secrets; print(secrets.token_urlsafe(48))"   # WORKER_SHARED_
 
 # 5. Unit do systemd + conferência de /health/. Com ANIMACAO_ATIVA=sim no
 #    .env, ele também instala o FramePack no ambiente dele
-#    (deploy/instalar_animacao.sh; os ~30 GB de modelos com --modelos).
+#    (deploy/instalar_animacao.sh; os ~30 GB de modelos com --modelos); com
+#    VOZ_ATIVA=sim, o Kokoro (deploy/instalar_voz.sh).
 ./deploy/instalar.sh
 ```
 

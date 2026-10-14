@@ -26,6 +26,9 @@ bancada/
 # e os ~30 GB de modelos dele. E de outro projeto, nao deste repositorio.
 framepack/
 
+# O Kokoro (voz): instalado pelo deploy/instalar_voz.sh, com o venv dele.
+voz/
+
 # Caches de ferramenta.
 .ruff_cache/
 .pytest_cache/

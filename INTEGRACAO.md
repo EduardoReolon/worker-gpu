@@ -921,6 +921,39 @@ ANIMACAO_ATIVA=sim
 3. O processo carrega os modelos a cada trabalho (alguns minutos a mais) e
    devolve toda a memória ao terminar.
 
+### Voz (texto para fala, Kokoro)
+
+```http
+POST /v1/audio/speech
+Content-Type: application/json
+
+{"model": "kokoro", "voice": "pf_dora", "input": "Você acorda cansado?", "response_format": "mp3"}
+```
+
+- **`200`**: o áudio (`audio/mpeg`, ou `audio/wav` se o libsndfile da máquina
+  não gravar MP3).
+- **`voice`**: uma voz do Kokoro. Em português do Brasil:
+  - `pf_dora` (feminina);
+  - `pm_alex` e `pm_santa` (masculinas).
+- Uma voz da OpenAI (`alloy`, `nova`) ou vazio vira `VOZ_PADRAO`.
+- Erros:
+  - `422` para texto vazio ou longo demais;
+  - `500 falha_na_voz` se o Kokoro não rodar;
+  - `503 timeout` se passar de `VOZ_TEMPO_MAXIMO`.
+- **Não usa a placa** e não passa pelo árbitro: o Kokoro (82M) roda na CPU,
+  mais rápido que tempo real. Narrar não espera a imagem nem a animação, e não
+  tira o modelo de texto da VRAM.
+- **Instalação:** `./deploy/instalar_voz.sh`, ou o `instalar.sh` com
+  `VOZ_ATIVA=sim` no `.env`. Ela cria `voz/`, com o venv dele e fora do git, e
+  instala o `espeak-ng`, que é a pronúncia do português. No fim, grava
+  `voz/teste.mp3`, para você ouvir antes de ligar.
+
+```bash
+VOZ_ATIVA=sim
+# VOZ_PADRAO=pf_dora
+# VOZ_VELOCIDADE=1.0
+```
+
 ### Saúde
 
 `GET /health/`, sem credencial. Use para diagnóstico, não como teste de
@@ -986,6 +1019,12 @@ pontos merecem olhada:
   cabeçalho — a única forma de 503 que saía daqui sem nada para decidir;
 - **`/health/` ganhou `ollama.carregados_detalhe`** e passou a nunca responder
   500. `ollama.carregados` continua sendo a lista de nomes, intocada;
+## O que mudou na 2.11
+
+- **rota nova, `/v1/audio/speech`** (voz pelo Kokoro, na CPU), desligada de
+  padrão (`VOZ_ATIVA`). Veja **Voz**;
+- `/health/` ganhou `rotas.voz` e, com a rota ligada, o bloco `voz`.
+
 ## O que mudou na 2.10
 
 - **rota nova, `/v1/videos`** (animação de uma imagem, pelo FramePack),

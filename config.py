@@ -398,6 +398,27 @@ ANIMACAO_GUARDAR_SEGUNDOS = _inteiro("ANIMACAO_GUARDAR_SEGUNDOS", 6 * 3600)
 
 
 # ---------------------------------------------------------------------------
+# Voz (texto para fala, pelo Kokoro)
+# ---------------------------------------------------------------------------
+# Desligada de padrao. O Kokoro (82M, Apache-2.0) roda na CPU, mais rapido que
+# tempo real: nao toma a placa nem passa pelo arbitro. Mora num ambiente proprio
+# (`voz/`, instalado pelo deploy/instalar_voz.sh), como o FramePack.
+VOZ_ATIVA = _booleano("VOZ_ATIVA", False)
+VOZ_DIR = os.path.expanduser(
+    os.environ.get("VOZ_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "voz"))
+)
+VOZ_PYTHON = os.path.expanduser(
+    os.environ.get("VOZ_PYTHON", os.path.join(VOZ_DIR, "venv", "bin", "python"))
+)
+# A voz quando o pedido nao traz uma do Kokoro (ou traz uma da OpenAI, "alloy").
+# Portugues do Brasil: pf_dora (feminina), pm_alex e pm_santa (masculinas).
+VOZ_PADRAO = os.environ.get("VOZ_PADRAO", "pf_dora")
+VOZ_VELOCIDADE = _decimal("VOZ_VELOCIDADE", 1.0)
+VOZ_TEMPO_MAXIMO = _inteiro("VOZ_TEMPO_MAXIMO", 120)
+VOZ_TEXTO_MAXIMO = _inteiro("VOZ_TEXTO_MAXIMO", 4000)
+
+
+# ---------------------------------------------------------------------------
 # Arbitragem
 # ---------------------------------------------------------------------------
 # Quanto esperar pelo lock antes de devolver 503. Zero = recusa na hora.
