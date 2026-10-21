@@ -106,6 +106,9 @@ def main() -> int:
             print(f"ERRO ao baixar o VAE {vae}: {erro}", file=sys.stderr)
             return 1
 
+    if _baixar_referencia() != 0:
+        return 1
+
     ativa = os.environ.get("TRANSCRICAO_ATIVA", "sim").strip().lower()
     whisper = os.environ.get("TRANSCRICAO_MODELO", "large-v3").strip()
     if ativa in {"1", "true", "yes", "sim", "on"} and not os.path.isdir(whisper):
@@ -138,6 +141,51 @@ def main() -> int:
 
     print(f"Pronto em {time.perf_counter() - inicio:.0f}s. O cache esta em ~/.cache/huggingface.")
     print("A primeira geracao (e a primeira transcricao) agora so le do disco.")
+    return 0
+
+
+def _baixar_referencia() -> int:
+    """O modelo das cenas com personagem e o IP-Adapter dele.
+
+    Sem isto, a primeira cena com `reference_image` baixaria ~10 GB (o SDXL,
+    o VAE e o codificador de imagem do IP-Adapter) dentro da requisicao.
+    """
+    ligada = os.environ.get("IMAGEM_EDICAO_ATIVA", "sim").strip().lower()
+    modelo = os.environ.get("IMAGEM_REFERENCIA_MODELO", "SG161222/RealVisXL_V5.0").strip()
+    if ligada not in {"1", "true", "yes", "sim", "on"} or not modelo or os.path.isdir(modelo):
+        return 0
+
+    from diffusers import AutoencoderKL, DiffusionPipeline
+    from huggingface_hub import hf_hub_download, snapshot_download
+
+    precisao = os.environ.get("IMAGEM_REFERENCIA_DTYPE", "float16").strip().lower()
+    vae = os.environ.get("IMAGEM_REFERENCIA_VAE", "madebyollin/sdxl-vae-fp16-fix").strip()
+    adaptador = os.environ.get("IMAGEM_IP_ADAPTER", "h94/IP-Adapter").strip()
+    subpasta = os.environ.get("IMAGEM_IP_ADAPTER_SUBPASTA", "sdxl_models").strip()
+    peso = os.environ.get(
+        "IMAGEM_IP_ADAPTER_PESO", "ip-adapter-plus_sdxl_vit-h.safetensors"
+    ).strip()
+    codificador = os.environ.get("IMAGEM_IP_ADAPTER_CODIFICADOR", "models/image_encoder").strip()
+
+    print(f"Baixando o modelo de referencia {modelo} ...")
+    try:
+        variantes = ["fp16", None] if precisao == "float16" else [None]
+        for variante in variantes:
+            try:
+                DiffusionPipeline.download(modelo, variant=variante, use_safetensors=True)
+                break
+            except Exception:
+                if variante is None:
+                    raise
+                print("Sem variante fp16; baixando os pesos completos.")
+        if vae:
+            AutoencoderKL.from_pretrained(vae)
+        print(f"Baixando o IP-Adapter {adaptador}/{subpasta}/{peso} ...")
+        hf_hub_download(adaptador, peso, subfolder=subpasta)
+        snapshot_download(adaptador, allow_patterns=[f"{codificador}/*"])
+    except Exception as erro:
+        print(f"ERRO ao baixar o modelo de referencia: {erro}", file=sys.stderr)
+        return 1
     return 0
 
 

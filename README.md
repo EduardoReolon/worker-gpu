@@ -14,6 +14,7 @@ Por isso **tudo** entra por aqui, inclusive o texto:
 |---|---|
 | `POST /v1/chat/completions` | texto — repassa ao Ollama |
 | `POST /v1/images/generations` | imagem — difusão |
+| `POST /v1/images/edits` | imagem com personagens de referência e foto preservada pela máscara |
 | `POST /parse/` | PDF, DOCX, PPTX ou XLSX para Markdown (Docling) |
 | `POST /v1/audio/transcriptions` | áudio para texto com tempos (Whisper) |
 | `POST /v1/embeddings` | vetores de passagens (multilingual-e5-large) |

@@ -243,6 +243,45 @@ IMAGEM_TEMPO_MAXIMO = _inteiro("IMAGEM_TEMPO_MAXIMO", 600)
 # Z-Image leva de 1 a 3 minutos.
 IMAGEM_TEMPO_TRAVADO = _inteiro("IMAGEM_TEMPO_TRAVADO", 900)
 
+# --- Edicao: referencias de personagem e foto na cena (/v1/images/edits) ----
+# Dois modelos, escolhidos POR PEDIDO:
+#
+# - sem imagem de referencia, vale o IMAGEM_MODELO de cima (o de mais
+#   qualidade, hoje o Z-Image) — inclusive para pintar so a parte da mascara;
+# - com referencia (os personagens), vale o IMAGEM_REFERENCIA_MODELO, que
+#   precisa aceitar IP-Adapter. O Z-Image nao aceita: o IP-Adapter so existe
+#   para o SDXL e familia. O RealVisXL e o SDXL de foto mais realista.
+#
+# Um so fica carregado por vez (a placa e de 8 GB): alternar entre os dois
+# custa uma recarga. Vazio desliga as referencias: elas passam a ser
+# ignoradas, com aviso na resposta.
+IMAGEM_EDICAO_ATIVA = _booleano("IMAGEM_EDICAO_ATIVA", True)
+IMAGEM_REFERENCIA_MODELO = os.environ.get(
+    "IMAGEM_REFERENCIA_MODELO", "SG161222/RealVisXL_V5.0"
+).strip()
+IMAGEM_REFERENCIA_DTYPE = os.environ.get("IMAGEM_REFERENCIA_DTYPE", "float16").strip().lower()
+IMAGEM_REFERENCIA_VAE = os.environ.get(
+    "IMAGEM_REFERENCIA_VAE", "madebyollin/sdxl-vae-fp16-fix"
+).strip()
+IMAGEM_REFERENCIA_SCHEDULER = (
+    os.environ.get("IMAGEM_REFERENCIA_SCHEDULER", "dpm++2m_karras").strip().lower()
+)
+IMAGEM_REFERENCIA_PASSOS = _inteiro("IMAGEM_REFERENCIA_PASSOS", 30)
+IMAGEM_REFERENCIA_GUIDANCE = _decimal("IMAGEM_REFERENCIA_GUIDANCE", 6.0)
+
+# O IP-Adapter: repositorio, subpasta, arquivo de pesos e o codificador de
+# imagem. O "plus" com o ViT-H copia a aparencia (rosto, roupa) melhor que o
+# basico, que copia mais o estilo.
+IMAGEM_IP_ADAPTER = os.environ.get("IMAGEM_IP_ADAPTER", "h94/IP-Adapter").strip()
+IMAGEM_IP_ADAPTER_SUBPASTA = os.environ.get("IMAGEM_IP_ADAPTER_SUBPASTA", "sdxl_models").strip()
+IMAGEM_IP_ADAPTER_PESO = os.environ.get(
+    "IMAGEM_IP_ADAPTER_PESO", "ip-adapter-plus_sdxl_vit-h.safetensors"
+).strip()
+IMAGEM_IP_ADAPTER_CODIFICADOR = os.environ.get(
+    "IMAGEM_IP_ADAPTER_CODIFICADOR", "models/image_encoder"
+).strip()
+IMAGEM_REFERENCIAS_MAXIMAS = _inteiro("IMAGEM_REFERENCIAS_MAXIMAS", 3)
+
 
 # ---------------------------------------------------------------------------
 # Conversao de PDF (Docling)

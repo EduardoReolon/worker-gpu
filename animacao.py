@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
 import shutil
 import subprocess
 import tempfile
@@ -81,6 +82,10 @@ class Trabalho:
     segundos: int
     tamanho: str
     pasta: Path
+    semente: int = 0
+    # O tamanho em que o FramePack vai gerar, (largura, altura), ou None para
+    # o da imagem na `ANIMACAO_RESOLUCAO`.
+    medidas: tuple[int, int] | None = None
     status: str = "queued"
     progresso: int = 0
     criado: int = field(default_factory=lambda: int(time.time()))
@@ -101,6 +106,7 @@ class Trabalho:
             "progress": self.progresso,
             "seconds": str(self.segundos),
             "size": self.tamanho,
+            "seed": self.semente,
             "created_at": self.criado,
         }
         if self.concluido:
@@ -155,6 +161,9 @@ def _comando(trabalho: Trabalho, imagem: Path) -> list[str]:
         "--passos", str(ANIMACAO_PASSOS),
         "--memoria-preservada", str(ANIMACAO_MEMORIA_PRESERVADA),
     ]  # fmt: skip
+    comando += ["--semente", str(trabalho.semente)]
+    if trabalho.medidas:
+        comando += ["--largura", str(trabalho.medidas[0]), "--altura", str(trabalho.medidas[1])]
     if ANIMACAO_TEACACHE:
         comando.append("--teacache")
     return comando
@@ -233,6 +242,34 @@ def _limpar() -> None:
             shutil.rmtree(trabalho.pasta, ignore_errors=True)
 
 
+def medidas_do_pedido(size: str | None) -> tuple[int, int] | None:
+    """`"448x800"` -> (448, 800), em multiplos de 32 e sem passar da area da
+    `ANIMACAO_RESOLUCAO`. None: o pedido nao disse, vale o da imagem.
+
+    O tempo do FramePack cresce com os pixels. Gerar maior que o pedido e
+    pagar por pixels que o cliente vai jogar fora ao reescalar; por isso o
+    tamanho pedido e respeitado, e so e REDUZIDO (na mesma proporcao) se
+    passar do teto da maquina — nunca aumentado.
+    """
+    if not size:
+        return None
+    try:
+        largura, _, altura = size.lower().partition("x")
+        largura, altura = int(largura), int(altura)
+    except ValueError as exc:
+        raise ValueError(f"size={size!r}: use LARGURAxALTURA, como 448x800.") from exc
+    if largura <= 0 or altura <= 0:
+        raise ValueError(f"size={size!r}: os dois lados precisam ser positivos.")
+
+    teto = ANIMACAO_RESOLUCAO * ANIMACAO_RESOLUCAO
+    if largura * altura > teto:
+        escala = (teto / (largura * altura)) ** 0.5
+        largura, altura = largura * escala, altura * escala
+
+    # Para baixo, em multiplos de 32 (o que o VAE do HunyuanVideo exige).
+    return max(256, int(largura) // 32 * 32), max(256, int(altura) // 32 * 32)
+
+
 def _invalido(mensagem: str, status: int = 422) -> JSONResponse:
     return JSONResponse(
         {"error": {"code": "pedido_invalido", "message": mensagem}}, status_code=status
@@ -246,10 +283,16 @@ def criar(
     model: str | None = Form(default=None),
     seconds: str | None = Form(default=None),
     size: str | None = Form(default=None),
+    seed: str | None = Form(default=None),
 ):
-    """`model` e aceito e ignorado (aqui e sempre o FramePack). `size` volta
-    no trabalho como veio: o video sai no formato da imagem, na resolucao do
-    `.env`, e o cliente reescala."""
+    """`model` e aceito e ignorado (aqui e sempre o FramePack).
+
+    `size` e respeitado: o FramePack gera nele (em multiplos de 32), so
+    reduzindo se passar do teto da `ANIMACAO_RESOLUCAO`; a imagem e cortada ao
+    centro para a proporcao pedida. `seed` fixa o resultado: a mesma imagem,
+    o mesmo `prompt` e a mesma `seed` dao o mesmo clipe. Sem ela, sorteia — e
+    a sorteada volta no trabalho, para o cliente poder repetir.
+    """
     _limpar()
     if not prompt.strip():
         return _invalido("prompt vazio.")
@@ -265,6 +308,14 @@ def criar(
     except ValueError:
         return _invalido(f"seconds={seconds!r}.")
     segundos = max(1, min(segundos, ANIMACAO_SEGUNDOS_MAXIMOS))
+    try:
+        semente = int(seed) if seed not in (None, "") else secrets.randbelow(2**31)
+    except ValueError:
+        return _invalido(f"seed={seed!r} nao e um inteiro.")
+    try:
+        medidas = medidas_do_pedido(size)
+    except ValueError as exc:
+        return _invalido(str(exc))
 
     posse = ARBITRO.usar("animacao", modelo=MODELO)
     try:
@@ -281,6 +332,8 @@ def criar(
         segundos=segundos,
         tamanho=size or "",
         pasta=pasta,
+        semente=semente,
+        medidas=medidas,
     )
     with _mural:
         _trabalhos[trabalho.id] = trabalho

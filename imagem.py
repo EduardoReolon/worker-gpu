@@ -34,6 +34,7 @@ import logging
 import os
 import threading
 import time
+from dataclasses import dataclass, field
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -48,6 +49,10 @@ from config import (
     IMAGEM_DEVICE,
     IMAGEM_DTYPE,
     IMAGEM_GUIDANCE,
+    IMAGEM_IP_ADAPTER,
+    IMAGEM_IP_ADAPTER_CODIFICADOR,
+    IMAGEM_IP_ADAPTER_PESO,
+    IMAGEM_IP_ADAPTER_SUBPASTA,
     IMAGEM_LADO_MAXIMO,
     IMAGEM_MAXIMO,
     IMAGEM_MODELO,
@@ -56,6 +61,13 @@ from config import (
     IMAGEM_PERMITIR_CPU,
     IMAGEM_QUANTIZAR,
     IMAGEM_QUANTIZAR_COMPONENTES,
+    IMAGEM_REFERENCIA_DTYPE,
+    IMAGEM_REFERENCIA_GUIDANCE,
+    IMAGEM_REFERENCIA_MODELO,
+    IMAGEM_REFERENCIA_PASSOS,
+    IMAGEM_REFERENCIA_SCHEDULER,
+    IMAGEM_REFERENCIA_VAE,
+    IMAGEM_REFERENCIAS_MAXIMAS,
     IMAGEM_SCHEDULER,
     IMAGEM_TEMPO_MAXIMO,
     IMAGEM_TEMPO_TRAVADO,
@@ -74,7 +86,96 @@ class TempoEsgotado(RuntimeError):
     """A geracao passou de `IMAGEM_TEMPO_MAXIMO`."""
 
 
-_pipeline = None
+@dataclass(frozen=True)
+class Perfil:
+    """Um modelo de imagem e o jeito de carrega-lo e de chama-lo.
+
+    Ha dois: o `principal` (o de mais qualidade, `IMAGEM_*`) e o de
+    `referencia` (`IMAGEM_REFERENCIA_*`), que aceita IP-Adapter e e usado so
+    quando o pedido traz imagens de personagem. Um so fica carregado por vez.
+    """
+
+    nome: str
+    modelo: str
+    dtype: str
+    quantizar: str = "nao"
+    componentes: tuple = field(default_factory=tuple)
+    vae: str = ""
+    scheduler: str = ""
+    passos: int = 30
+    guidance: float = 6.0
+    ip_adapter: bool = False
+
+
+def perfil_principal() -> Perfil:
+    return Perfil(
+        nome="principal",
+        modelo=IMAGEM_MODELO,
+        dtype=IMAGEM_DTYPE,
+        quantizar=IMAGEM_QUANTIZAR,
+        componentes=tuple(IMAGEM_QUANTIZAR_COMPONENTES),
+        vae=IMAGEM_VAE,
+        scheduler=IMAGEM_SCHEDULER,
+        passos=IMAGEM_PASSOS,
+        guidance=IMAGEM_GUIDANCE,
+    )
+
+
+def perfil_referencia() -> Perfil | None:
+    """O perfil com IP-Adapter, ou None se as referencias estao desligadas."""
+    if not IMAGEM_REFERENCIA_MODELO:
+        return None
+    return Perfil(
+        nome="referencia",
+        modelo=IMAGEM_REFERENCIA_MODELO,
+        dtype=IMAGEM_REFERENCIA_DTYPE,
+        vae=IMAGEM_REFERENCIA_VAE,
+        scheduler=IMAGEM_REFERENCIA_SCHEDULER,
+        passos=IMAGEM_REFERENCIA_PASSOS,
+        guidance=IMAGEM_REFERENCIA_GUIDANCE,
+        ip_adapter=True,
+    )
+
+
+class _Carregado:
+    """O pipeline residente e o de pintura derivado dele, com os mesmos pesos.
+
+    O de pintura (`AutoPipelineForInpainting.from_pipe`) nao carrega nada de
+    novo: reaproveita os modulos do base. O que nao pode ser compartilhado sao
+    os ganchos do `enable_model_cpu_offload` — instalados pelos dois nos
+    mesmos modulos, um desfaria o outro. Por isso so UM fica com os ganchos:
+    trocar de modo os reinstala (o proprio `enable_model_cpu_offload` remove
+    os anteriores), o que custa so mover os pesos para a RAM.
+    """
+
+    def __init__(self, base, perfil: Perfil, dispositivo: str):
+        self.base = base
+        self.perfil = perfil
+        self.dispositivo = dispositivo
+        self.pintura = None
+        self.ativo = "base"
+
+    def ativar(self, modo: str):
+        if modo == "base":
+            pipe = self.base
+        else:
+            if self.pintura is None:
+                from diffusers import AutoPipelineForInpainting
+
+                if self.dispositivo == "cuda":
+                    self.base.remove_all_hooks()
+                self.pintura = AutoPipelineForInpainting.from_pipe(self.base)
+                self.pintura.set_progress_bar_config(disable=True)
+                self.ativo = ""
+            pipe = self.pintura
+
+        if self.dispositivo == "cuda" and self.ativo != modo:
+            pipe.enable_model_cpu_offload()
+        self.ativo = modo
+        return pipe
+
+
+_pipeline: _Carregado | None = None
 _dispositivo_do_pipeline = ""
 # "sdxl", "outra" ou "" (ainda nao carregou). A grade de proporcoes e do SDXL:
 # avisar sobre ela num modelo de outra familia mandaria mudar o que esta certo.
@@ -335,7 +436,13 @@ def _avisar_do_vae(pipe, vae: str, meia: bool) -> None:
     )
 
 
-def _montar_pipeline(dispositivo: str, modelo: str = "", vae: str = "", scheduler: str = ""):
+def _montar_pipeline(
+    dispositivo: str,
+    modelo: str = "",
+    vae: str = "",
+    scheduler: str = "",
+    perfil: Perfil | None = None,
+):
     """O pipeline como o SERVICO o monta.
 
     Os parametros existem para a `bancada.py` comparar variantes por aqui, e
@@ -345,25 +452,26 @@ def _montar_pipeline(dispositivo: str, modelo: str = "", vae: str = "", schedule
     import torch
     from diffusers import AutoPipelineForText2Image
 
-    modelo = modelo or IMAGEM_MODELO
-    vae = vae if vae != "" else IMAGEM_VAE
-    scheduler = scheduler if scheduler != "" else IMAGEM_SCHEDULER
+    perfil = perfil or perfil_principal()
+    modelo = modelo or perfil.modelo
+    vae = vae if vae != "" else perfil.vae
+    scheduler = scheduler if scheduler != "" else perfil.scheduler
 
     meia = dispositivo == "cuda"
-    precisao = getattr(torch, IMAGEM_DTYPE) if meia else torch.float32
+    precisao = getattr(torch, perfil.dtype) if meia else torch.float32
     argumentos = {
         "torch_dtype": precisao,
         "use_safetensors": True,
     }
-    if meia and IMAGEM_DTYPE == "float16":
+    if meia and perfil.dtype == "float16":
         # So em float16: e a unica variante que os repositorios SDXL publicam
         # a parte. Um modelo em bfloat16 ja vem assim no ramo principal.
         argumentos["variant"] = "fp16"
 
-    if meia and IMAGEM_QUANTIZAR != "nao":
+    if meia and perfil.quantizar != "nao":
         from diffusers.quantizers import PipelineQuantizationConfig
 
-        if IMAGEM_QUANTIZAR == "4bit":
+        if perfil.quantizar == "4bit":
             backend = "bitsandbytes_4bit"
             extras = {
                 "load_in_4bit": True,
@@ -373,13 +481,11 @@ def _montar_pipeline(dispositivo: str, modelo: str = "", vae: str = "", schedule
         else:
             backend, extras = "bitsandbytes_8bit", {"load_in_8bit": True}
 
-        logger.info(
-            "Quantizando %s em %s.", ", ".join(IMAGEM_QUANTIZAR_COMPONENTES), IMAGEM_QUANTIZAR
-        )
+        logger.info("Quantizando %s em %s.", ", ".join(perfil.componentes), perfil.quantizar)
         argumentos["quantization_config"] = PipelineQuantizationConfig(
             quant_backend=backend,
             quant_kwargs=extras,
-            components_to_quantize=IMAGEM_QUANTIZAR_COMPONENTES,
+            components_to_quantize=list(perfil.componentes),
         )
 
     if vae:
@@ -406,6 +512,17 @@ def _montar_pipeline(dispositivo: str, modelo: str = "", vae: str = "", schedule
     # Depois de carregar, porque a familia do VAE se descobre no objeto.
     _avisar_do_vae(pipe, vae, meia)
 
+    if perfil.ip_adapter:
+        # Antes do offload: o codificador de imagem do IP-Adapter entra no
+        # pipeline como mais um modulo, e o offload precisa conhece-lo.
+        logger.info("IP-Adapter: %s/%s", IMAGEM_IP_ADAPTER_SUBPASTA, IMAGEM_IP_ADAPTER_PESO)
+        pipe.load_ip_adapter(
+            IMAGEM_IP_ADAPTER,
+            subfolder=IMAGEM_IP_ADAPTER_SUBPASTA,
+            weight_name=IMAGEM_IP_ADAPTER_PESO,
+            image_encoder_folder=IMAGEM_IP_ADAPTER_CODIFICADOR,
+        )
+
     if dispositivo == "cuda":
         # `enable_model_cpu_offload`, e NAO `.to("cuda")`. Os pesos ficam na
         # RAM e cada submodulo sobe para a placa na hora de rodar; o pico cai
@@ -421,16 +538,26 @@ def _montar_pipeline(dispositivo: str, modelo: str = "", vae: str = "", schedule
     return pipe
 
 
-def _obter_pipeline(dispositivo: str):
+def _obter_pipeline(dispositivo: str, perfil: Perfil | None = None, modo: str = "base"):
+    """O pipeline pronto para chamar: do `perfil` pedido, no `modo` pedido
+    (`base` gera do zero; `pintura` pinta so a mascara).
+
+    Um so modelo de imagem fica carregado. Pedir outro perfil descarrega o
+    atual antes — com os dois juntos, nem a RAM nem a placa aguentam.
+    """
     global _pipeline, _dispositivo_do_pipeline
 
+    perfil = perfil or perfil_principal()
     with _trava:
-        if _pipeline is not None and _dispositivo_do_pipeline != dispositivo:
+        if _pipeline is not None and (
+            _dispositivo_do_pipeline != dispositivo or _pipeline.perfil != perfil
+        ):
             _descarregar_sem_trava()
         if _pipeline is None:
-            _pipeline = _montar_pipeline(dispositivo)
+            base = _montar_pipeline(dispositivo, perfil=perfil)
+            _pipeline = _Carregado(base, perfil, dispositivo)
             _dispositivo_do_pipeline = dispositivo
-        return _pipeline
+        return _pipeline.ativar(modo)
 
 
 def _descarregar_sem_trava() -> None:
@@ -763,6 +890,8 @@ def estado() -> dict:
         "ultimo_dispositivo": _ultimo_dispositivo or "(nada gerado ainda)",
         "baixado": modelo_esta_no_disco(),
         "carregado": _pipeline is not None,
+        # Qual dos dois modelos esta carregado: `principal` ou `referencia`.
+        "carregado_perfil": getattr(_pipeline, "perfil", None) and _pipeline.perfil.nome,
         "passos": IMAGEM_PASSOS,
         "guidance": IMAGEM_GUIDANCE,
         # Os tres que decidem qualidade e nao aparecem em lugar nenhum senao
@@ -780,4 +909,17 @@ def estado() -> dict:
         "permite_cpu": IMAGEM_PERMITIR_CPU,
         "tempo_maximo": IMAGEM_TEMPO_MAXIMO,
         "tempo_travado": IMAGEM_TEMPO_TRAVADO,
+        # O modelo das cenas com personagem (`/v1/images/edits` com
+        # `reference_image`). Vazio: as referencias sao ignoradas, com aviso.
+        "referencia": {
+            "modelo": IMAGEM_REFERENCIA_MODELO or None,
+            "maximo": IMAGEM_REFERENCIAS_MAXIMAS,
+            "ip_adapter": (
+                "/".join((IMAGEM_IP_ADAPTER, IMAGEM_IP_ADAPTER_SUBPASTA, IMAGEM_IP_ADAPTER_PESO))
+                if IMAGEM_REFERENCIA_MODELO
+                else None
+            ),
+            "passos": IMAGEM_REFERENCIA_PASSOS,
+            "guidance": IMAGEM_REFERENCIA_GUIDANCE,
+        },
     }

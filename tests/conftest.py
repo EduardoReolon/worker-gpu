@@ -74,6 +74,7 @@ def worker(ambiente):
         "texto",
         "prazo",
         "imagem",
+        "edicao",
         "conversao",
         "transcricao",
         "vetorizacao",

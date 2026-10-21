@@ -106,6 +106,35 @@ def test_a_resposta_de_texto_tem_a_forma_publicada(cliente, cabecalhos):
     assert _forma(_exemplo("texto-resposta.json")) <= _forma(resposta.json())
 
 
+def test_a_resposta_de_edicao_tem_a_forma_publicada(cliente, cabecalhos, monkeypatch):
+    import io
+
+    PIL = pytest.importorskip("PIL")
+    from PIL import Image
+
+    import edicao
+    import imagem
+    import ollama
+
+    monkeypatch.setattr(edicao, "editar_imagens", lambda dispositivo, **a: [b"png"])
+    monkeypatch.setattr(imagem, "resolver_dispositivo", lambda: "cuda")
+    monkeypatch.setattr(imagem, "IMAGEM_REFERENCIA_MODELO", "")
+    monkeypatch.setattr(ollama, "descarregar_tudo", lambda: None)
+    memoria = io.BytesIO()
+    Image.new("RGB", (8, 8)).save(memoria, format="PNG")
+    assert PIL
+
+    resposta = cliente.post(
+        "/v1/images/edits",
+        data={"prompt": "x", "size": "720x1280"},
+        files=[("reference_image", ("r.png", memoria.getvalue(), "image/png"))],
+        headers=cabecalhos,
+    )
+
+    assert resposta.status_code == 200
+    assert _forma(_exemplo("imagem-edicao-resposta.json")) <= _forma(resposta.json())
+
+
 def test_a_resposta_de_imagem_tem_a_forma_publicada(cliente, cabecalhos):
     resposta = cliente.post("/v1/images/generations", json={"prompt": "x"}, headers=cabecalhos)
 

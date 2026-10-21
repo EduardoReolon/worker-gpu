@@ -599,6 +599,64 @@ não dá erro, gera uma imagem a partir do pouco sinal que sobrou, e o resultado
 mudaria o seu pedido —, mas registra um aviso no journal quando detecta
 português. Se você gera o prompt com um LLM, peça a ele em inglês.
 
+### Imagem com referência e foto na cena (`/v1/images/edits`)
+
+O dialeto de edição da OpenAI, com dois campos a mais: os personagens de
+referência.
+
+```http
+POST /v1/images/edits
+Content-Type: multipart/form-data
+
+prompt=<o primeiro quadro, em inglês>
+size=720x1280
+n=1
+negative_prompt=<opcional>
+seed=<opcional>
+image=<PNG base, opcional>
+mask=<PNG máscara, com alfa, do tamanho da base>
+reference_image=<PNG>          (repetível, até 3: os personagens)
+reference_strength=0.60        (0 a 1, só com reference_image)
+```
+
+**`200`:** igual ao `/v1/images/generations`, `{"data": [{"b64_json": "..."}]}`
+(`contrato/imagem-edicao-resposta.json`), e `avisos` quando algo pedido não
+foi feito.
+
+| Campos | O que o worker faz |
+|---|---|
+| `reference_image` (sem `image`) | gera do zero pelo `prompt`, puxando a aparência das referências |
+| `image` + `mask` (+ referências) | **pinta só a parte transparente** da máscara; a parte opaca volta **idêntica**, pixel a pixel |
+| `image` sem `mask` | `422`: não suportado |
+
+**A máscara:** transparente (alfa 0) = pintar; opaco = manter, como na OpenAI.
+Sem canal alfa, ou de tamanho diferente da `image`, volta `422`. Pintar passa a
+imagem inteira pelo VAE, que altera de leve até o que devia ficar; por isso o
+worker **cola de volta** os pixels da parte opaca depois de gerar — a foto da
+janela sai exatamente como foi mandada.
+
+**Dois modelos, escolhidos pelo pedido:**
+
+- **sem `reference_image`**: o modelo principal (`imagem.modelo` no
+  `/health/`), o de mais qualidade — hoje o Z-Image, que também pinta a
+  máscara com os mesmos pesos;
+- **com `reference_image`**: o modelo de referência (`imagem.referencia.modelo`,
+  padrão RealVisXL V5) com **IP-Adapter Plus**. O Z-Image não aceita
+  IP-Adapter: ele só existe para o SDXL e família.
+
+Só um fica carregado por vez (placa de 8 GB): **alternar entre cenas com e sem
+personagem custa uma recarga** (1 a 2 minutos). Se puder, agrupe as cenas com
+personagem. `imagem.carregado_perfil` diz qual está carregado agora.
+
+Com o modelo de referência desligado na máquina (`imagem.referencia.modelo:
+null`), as referências são ignoradas e a resposta traz `avisos` dizendo isso —
+a cena sai só pela descrição.
+
+**Erros:** os do `/generations` (`503 gpu_ocupada`/`sem_vram`/`timeout`; `500`
+com `error.code`: `worker_travado`, `falha_na_edicao`) e `422`
+(`pedido_invalido`, `tamanho_invalido`) com `error.message`. `404`/`405`:
+worker sem a rota.
+
 ### Transcrição de áudio (Whisper)
 
 ```http
@@ -857,9 +915,23 @@ Content-Type: multipart/form-data
 prompt=The man waves at the camera.   (o movimento, em inglês, curto)
 model=qualquer                        (ignorado: aqui é sempre o FramePack)
 seconds=3                             (1 a ANIMACAO_SEGUNDOS_MAXIMOS)
-size=720x1280                         (volta como veio)
+size=448x800                          (respeitado: veja abaixo)
+seed=4242                             (opcional: o mesmo clipe de novo)
 input_reference=<a imagem>
 ```
+
+- **`size` é respeitado.** O FramePack gera no tamanho pedido, arredondado para
+  baixo em múltiplos de 32, com a imagem cortada ao centro para a proporção. Só
+  é **reduzido** (na mesma proporção) se passar do teto da máquina,
+  `ANIMACAO_RESOLUCAO`² pixels — `720x1280` vira `480x832` com o teto de 640.
+  Nunca maior que o pedido: o tempo cresce com os pixels. Sem `size`, o
+  formato da imagem na `ANIMACAO_RESOLUCAO`.
+- **`seed` fixa o resultado:** a mesma imagem, o mesmo `prompt` e a mesma
+  `seed` dão o mesmo clipe. Sem ela o worker sorteia, e a usada volta em
+  `seed` no trabalho — guarde-a para pedir de novo um trabalho que um restart
+  perdeu.
+- **`seconds`** vira trechos de ~1,2 s do FramePack: `round(seconds / 1,2)`,
+  mínimo 1 (3 s = 2 trechos, 4 s = 3).
 
 - **`200`**: o trabalho, com `id` e `status: queued`
   (`contrato/video-resposta.json`). A placa já foi tomada; ninguém mais
@@ -1019,6 +1091,16 @@ pontos merecem olhada:
   cabeçalho — a única forma de 503 que saía daqui sem nada para decidir;
 - **`/health/` ganhou `ollama.carregados_detalhe`** e passou a nunca responder
   500. `ollama.carregados` continua sendo a lista de nomes, intocada;
+## O que mudou na 2.12
+
+- **rota nova, `/v1/images/edits`**: imagem com personagens de referência
+  (IP-Adapter, no modelo de referência) e com foto preservada pela máscara.
+  Veja **Imagem com referência e foto na cena**;
+- **`/v1/videos` aceita `seed`** e a devolve no trabalho (sorteada, se não
+  veio), e **respeita `size`** em vez de gerar na resolução da máquina;
+- `/health/` ganhou `rotas.imagem_edicao`, `imagem.carregado_perfil` e
+  `imagem.referencia`.
+
 ## O que mudou na 2.11
 
 - **rota nova, `/v1/audio/speech`** (voz pelo Kokoro, na CPU), desligada de

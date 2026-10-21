@@ -1,7 +1,7 @@
 {
-  "_contrato_versao": "2.11",
+  "_contrato_versao": "2.12",
   "_rota": "POST /v1/videos (multipart: prompt, model, seconds, size, input_reference) e GET /v1/videos/{id}",
-  "_nota": "O dialeto de video da OpenAI (Sora), assincrono. status: queued, in_progress, completed ou failed. O MP4 sai em GET /v1/videos/{id}/content quando completed. `error` so aparece em failed, com code (timeout, sem_vram, falha_na_animacao) e message. Um id desconhecido (o worker reiniciou) da 404 nao_encontrado: peca de novo. `model` volta sempre 'framepack'; `size` volta como veio.",
+  "_nota": "O dialeto de video da OpenAI (Sora), assincrono. status: queued, in_progress, completed ou failed. O MP4 sai em GET /v1/videos/{id}/content quando completed. `error` so aparece em failed, com code (timeout, sem_vram, falha_na_animacao) e message. Um id desconhecido (o worker reiniciou) da 404 nao_encontrado: peca de novo. `model` volta sempre 'framepack'; `size` volta como veio e e RESPEITADO: o FramePack gera nele (em multiplos de 32, para baixo), so reduzindo na mesma proporcao se passar do teto da maquina (ANIMACAO_RESOLUCAO ao quadrado) — nunca maior que o pedido.",
   "id": "video_0123456789abcdef",
   "object": "video",
   "status": "queued",
@@ -9,5 +9,8 @@
   "progress": 0,
   "seconds": "4",
   "size": "720x1280",
-  "created_at": 1760400000
+  "seed": 1234567,
+  "created_at": 1760400000,
+  "_nota_seed": "`seed` (inteiro, opcional, no multipart): a mesma imagem, o mesmo prompt e a mesma seed dao o mesmo clipe. Sem ela, o worker sorteia, e a usada volta em `seed` — guarde-a para pedir de novo um trabalho perdido num restart.",
+  "_nota_seconds": "`seconds` e arredondado para trechos de ~1,2 s do FramePack: trechos = round(seconds / 1,2), minimo 1 (3 s = 2 trechos, 4 s = 3). `seconds` volta como foi pedido."
 }

@@ -52,6 +52,7 @@ from fastapi import FastAPI
 import animacao
 import contexto
 import conversao
+import edicao
 import imagem
 import modelos
 import ollama
@@ -66,6 +67,7 @@ from config import (
     ANIMACAO_ATIVA,
     CONVERSAO_ATIVA,
     IMAGEM_ATIVA,
+    IMAGEM_EDICAO_ATIVA,
     TRANSCRICAO_ATIVA,
     VETORIZACAO_ATIVA,
     VOZ_ATIVA,
@@ -79,7 +81,7 @@ logger = logging.getLogger("worker-gpu")
 # ai quem integra precisa olhar, e `INTEGRACAO.md` ganha uma secao.
 # Acrescentar campo nao quebra ninguem e nao sobe nada: todo cliente deve
 # ignorar o que nao conhece.
-CONTRATO_VERSAO = "2.11"
+CONTRATO_VERSAO = "2.12"
 
 app = FastAPI(title="worker-gpu", version=CONTRATO_VERSAO)
 
@@ -92,6 +94,8 @@ if IMAGEM_ATIVA:
     # ausente so apareceria ali, como 500.
     imagem.conferir_configuracao()
     app.include_router(imagem.router)
+    if IMAGEM_EDICAO_ATIVA:
+        app.include_router(edicao.router)
 
 if TRANSCRICAO_ATIVA:
     # Na subida, pelo mesmo motivo da imagem: o Whisper carrega no primeiro
@@ -219,6 +223,7 @@ def health():
     corpo["rotas"] = {
         "texto": True,
         "imagem": IMAGEM_ATIVA,
+        "imagem_edicao": IMAGEM_ATIVA and IMAGEM_EDICAO_ATIVA,
         "conversao": CONVERSAO_ATIVA,
         "transcricao": TRANSCRICAO_ATIVA,
         "vetorizacao": VETORIZACAO_ATIVA,

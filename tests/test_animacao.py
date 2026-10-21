@@ -20,13 +20,18 @@ for a in ("--framepack-dir", "--imagem", "--prompt", "--segundos", "--saida", "-
           "--passos", "--memoria-preservada"):
     p.add_argument(a)
 p.add_argument("--teacache", action="store_true")
+p.add_argument("--semente")
+p.add_argument("--largura", default="")
+p.add_argument("--altura", default="")
 args = p.parse_args()
 if "quebre" in args.prompt:
     print("torch.OutOfMemoryError: CUDA out of memory", flush=True)
     sys.exit(1)
 for n in (10, 50, 90):
     print(f"PROGRESSO {n}", flush=True)
-open(args.saida, "wb").write(b"MP4:" + args.prompt.encode())
+open(args.saida, "wb").write(
+    f"MP4:{args.prompt}|semente={args.semente}|{args.largura}x{args.altura}".encode()
+)
 """
 
 
@@ -53,11 +58,17 @@ def cliente(animacao_mod):
     return TestClient(app)
 
 
-def _criar(cliente, cabecalhos, prompt="The man waves.", segundos="3"):
+def _criar(cliente, cabecalhos, prompt="The man waves.", segundos="3", **extras):
     return cliente.post(
         "/v1/videos",
         headers=cabecalhos,
-        data={"prompt": prompt, "model": "ltx-video", "seconds": segundos, "size": "720x1280"},
+        data={
+            "prompt": prompt,
+            "model": "ltx-video",
+            "seconds": segundos,
+            "size": "720x1280",
+            **extras,
+        },
         files={"input_reference": ("lamina.png", b"PNG", "image/png")},
     )
 
@@ -83,7 +94,8 @@ def test_cria_espera_e_baixa(cliente, cabecalhos, animacao_mod):
     pronto = _esperar(cliente, cabecalhos, trabalho["id"])
     assert pronto["status"] == "completed" and pronto["progress"] == 100
     video = cliente.get(f"/v1/videos/{trabalho['id']}/content", headers=cabecalhos)
-    assert video.status_code == 200 and video.content == b"MP4:The man waves."
+    assert video.status_code == 200
+    assert video.content.startswith(b"MP4:The man waves.|semente=")
     assert video.headers["content-type"] == "video/mp4"
     assert not ARBITRO.ocupada  # a placa foi devolvida
     assert "ollama" in animacao_mod.descarregados  # e soltaram o Ollama antes
@@ -144,3 +156,57 @@ def test_conferir_configuracao_recusa_sem_framepack(animacao_mod, tmp_path, monk
     (tmp_path / "diffusers_helper").mkdir()
     monkeypatch.setattr(animacao_mod, "FRAMEPACK_DIR", str(tmp_path))
     animacao_mod.conferir_configuracao()
+
+
+# ---------------------------------------------------------------------------
+# seed e size (docs/WORKER_IMAGEM_E_CENAS.md do PubliBot, secao 2)
+# ---------------------------------------------------------------------------
+def _video(cliente, cabecalhos, **extras) -> tuple[dict, bytes]:
+    trabalho = _criar(cliente, cabecalhos, **extras).json()
+    pronto = _esperar(cliente, cabecalhos, trabalho["id"])
+    return pronto, cliente.get(f"/v1/videos/{trabalho['id']}/content", headers=cabecalhos).content
+
+
+def test_a_seed_pedida_chega_ao_framepack_e_volta_no_trabalho(cliente, cabecalhos):
+    """A mesma imagem, o mesmo prompt e a mesma seed dao o mesmo clipe: e o
+    que deixa o cliente pedir de novo um trabalho que o restart perdeu."""
+    pronto, video = _video(cliente, cabecalhos, seed="4242")
+
+    assert pronto["seed"] == 4242
+    assert b"|semente=4242|" in video
+
+
+def test_sem_seed_o_worker_sorteia_e_devolve_a_sorteada(cliente, cabecalhos):
+    pronto, video = _video(cliente, cabecalhos)
+
+    assert isinstance(pronto["seed"], int)
+    assert f"|semente={pronto['seed']}|".encode() in video
+
+
+def test_seed_invalida_e_422(cliente, cabecalhos):
+    assert _criar(cliente, cabecalhos, seed="muitas").status_code == 422
+
+
+def test_o_size_pedido_e_respeitado(cliente, cabecalhos):
+    """448x800 e o balde 9:16 que o PubliBot pede; gerar maior seria pagar
+    pixels que ele joga fora ao reescalar."""
+    _, video = _video(cliente, cabecalhos, size="448x800")
+
+    assert video.endswith(b"|448x800")
+
+
+@pytest.mark.parametrize(
+    ("pedido", "esperado"),
+    [
+        ("448x800", (448, 800)),
+        ("450x810", (448, 800)),  # para baixo, em multiplos de 32
+        ("720x1280", (480, 832)),  # passa do teto de 640x640: reduz na proporcao
+        (None, None),
+    ],
+)
+def test_o_tamanho_so_e_reduzido_nunca_aumentado(animacao_mod, pedido, esperado):
+    assert animacao_mod.medidas_do_pedido(pedido) == esperado
+
+
+def test_size_invalido_e_422(cliente, cabecalhos):
+    assert _criar(cliente, cabecalhos, size="grande").status_code == 422

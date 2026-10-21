@@ -35,6 +35,10 @@ def _argumentos():
     p.add_argument("--memoria-preservada", type=float, default=6.0)
     p.add_argument("--teacache", action="store_true")
     p.add_argument("--semente", type=int, default=31337)
+    # O tamanho pedido pelo cliente, ja em multiplos de 32. 0: o formato da
+    # grade do FramePack mais perto da imagem, na `--resolucao`.
+    p.add_argument("--largura", type=int, default=0)
+    p.add_argument("--altura", type=int, default=0)
     return p.parse_args()
 
 
@@ -133,7 +137,10 @@ def main() -> int:
         llama_vec_n, llama_mask_n = crop_or_pad_yield_mask(llama_vec_n, length=512)
 
         imagem = np.array(Image.open(args.imagem).convert("RGB"))
-        altura, largura = _medidas(*imagem.shape[:2], args.resolucao)
+        if args.largura and args.altura:
+            altura, largura = args.altura, args.largura
+        else:
+            altura, largura = _medidas(*imagem.shape[:2], args.resolucao)
         imagem = resize_and_center_crop(imagem, target_width=largura, target_height=altura)
         imagem_pt = torch.from_numpy(imagem).float() / 127.5 - 1
         imagem_pt = imagem_pt.permute(2, 0, 1)[None, :, None]
