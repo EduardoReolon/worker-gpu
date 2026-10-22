@@ -913,7 +913,7 @@ POST /v1/videos
 Content-Type: multipart/form-data
 
 prompt=The man waves at the camera.   (o movimento, em inglês, curto)
-model=qualquer                        (ignorado: aqui é sempre o FramePack)
+model=framepack-fp8                   (do catálogo; outro nome usa o padrão)
 seconds=3                             (1 a ANIMACAO_SEGUNDOS_MAXIMOS)
 size=448x800                          (respeitado: veja abaixo)
 seed=4242                             (opcional: o mesmo clipe de novo)
@@ -926,6 +926,15 @@ input_reference=<a imagem>
   `ANIMACAO_RESOLUCAO`² pixels — `720x1280` vira `480x832` com o teto de 640.
   Nunca maior que o pedido: o tempo cresce com os pixels. Sem `size`, o
   formato da imagem na `ANIMACAO_RESOLUCAO`.
+- **`model` escolhe o modelo** do catálogo (`animacao.modelos` no
+  `/health/`): `framepack` (o original, bf16) ou `framepack-fp8` (o mesmo,
+  convertido para fp8 na memória). Um nome fora do catálogo — o `sora-2` de
+  uma conexão paga, por exemplo — usa `animacao.modelo_padrao`. O usado volta
+  em `model`. O **fp8** é bem mais rápido numa máquina com pouca RAM: o modelo
+  inteiro (~13 GB, em vez de ~26) cabe na memória e o disco sai do caminho.
+  Perde um pouco de detalhe fino: um trecho que não ficou bom pode ser refeito
+  com `framepack` e a **mesma `seed`**. Numa fila de cenas, prefira o modelo do
+  último trabalho (`animacao.ultimo.modelo`): o cache de disco já está quente.
 - **`seed` fixa o resultado:** a mesma imagem, o mesmo `prompt` e a mesma
   `seed` dão o mesmo clipe. Sem ela o worker sorteia, e a usada volta em
   `seed` no trabalho — guarde-a para pedir de novo um trabalho que um restart
@@ -1119,6 +1128,14 @@ pontos merecem olhada:
   cabeçalho — a única forma de 503 que saía daqui sem nada para decidir;
 - **`/health/` ganhou `ollama.carregados_detalhe`** e passou a nunca responder
   500. `ollama.carregados` continua sendo a lista de nomes, intocada;
+## O que mudou na 2.13
+
+- **`/v1/videos` passa a ler o `model`**: `framepack` (bf16) ou
+  `framepack-fp8`; fora do catálogo, o padrão da máquina. O usado volta em
+  `model` no trabalho (antes, sempre `framepack`);
+- `/health/` ganhou `animacao.modelos`, `animacao.modelo_padrao`,
+  `animacao.ultimo.modelo` e `model` em cada `animacao.em_curso`.
+
 ## O que mudou na 2.12
 
 - **rota nova, `/v1/images/edits`**: imagem com personagens de referência

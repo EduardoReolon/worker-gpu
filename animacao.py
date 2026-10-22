@@ -56,6 +56,8 @@ from arbitro import ARBITRO, GpuOcupada
 from config import (
     ANIMACAO_GUARDAR_SEGUNDOS,
     ANIMACAO_MEMORIA_PRESERVADA,
+    ANIMACAO_MODELO_PADRAO,
+    ANIMACAO_MODELOS,
     ANIMACAO_PASSOS,
     ANIMACAO_PYTHON,
     ANIMACAO_RAM_FIXA_GB,
@@ -72,6 +74,32 @@ logger = logging.getLogger("worker-gpu.animacao")
 router = APIRouter()
 
 MODELO = "framepack"
+
+
+def catalogo() -> dict[str, tuple[str, str]]:
+    """`ANIMACAO_MODELOS` -> {nome: (repositorio, precisao)}."""
+    modelos = {}
+    for item in ANIMACAO_MODELOS.split(","):
+        nome, _, resto = item.strip().partition("=")
+        repositorio, _, precisao = resto.strip().rpartition(":")
+        if nome and repositorio and precisao in ("bf16", "fp8"):
+            modelos[nome.strip()] = (repositorio.strip(), precisao)
+    return modelos
+
+
+def escolher_modelo(pedido: str | None) -> str:
+    """O do catalogo, se o cliente pediu um; senao o padrao.
+
+    Nome desconhecido NAO e erro: o cliente manda o `model` da conexao, que
+    pode ser o de outro provedor (`sora-2`, `ltx-video`). Recusar quebraria
+    quem so troca o endereco.
+    """
+    modelos = catalogo()
+    if pedido and pedido.strip() in modelos:
+        return pedido.strip()
+    return ANIMACAO_MODELO_PADRAO if ANIMACAO_MODELO_PADRAO in modelos else next(iter(modelos))
+
+
 SCRIPT = Path(__file__).resolve().parent / "animar_framepack.py"
 IMAGEM_MAXIMA = 20 * 1024 * 1024
 
@@ -84,6 +112,7 @@ class Trabalho:
     tamanho: str
     pasta: Path
     semente: int = 0
+    modelo: str = MODELO
     # O tamanho em que o FramePack vai gerar, (largura, altura), ou None para
     # o da imagem na `ANIMACAO_RESOLUCAO`.
     medidas: tuple[int, int] | None = None
@@ -103,7 +132,7 @@ class Trabalho:
             "id": self.id,
             "object": "video",
             "status": self.status,
-            "model": MODELO,
+            "model": self.modelo,
             "progress": self.progresso,
             "seconds": str(self.segundos),
             "size": self.tamanho,
@@ -131,10 +160,36 @@ def conferir_configuracao() -> None:
             f"ANIMACAO_ATIVA esta ligado, mas o FramePack nao esta em {raiz} "
             "(FRAMEPACK_DIR). Veja INTEGRACAO.md, 'Animacao'; ou ANIMACAO_ATIVA=nao."
         )
+    if not catalogo():
+        raise RuntimeError(
+            f"ANIMACAO_MODELOS={ANIMACAO_MODELOS!r} nao tem nenhum modelo valido. Formato: "
+            "nome=repositorio:bf16 ou :fp8, separados por virgula."
+        )
+    _avisar_do_teto_para_fp8()
     if not os.access(ANIMACAO_PYTHON, os.X_OK):
         raise RuntimeError(
             f"ANIMACAO_PYTHON={ANIMACAO_PYTHON} nao existe ou nao executa: e o Python do "
             "ambiente do FramePack (venv dele)."
+        )
+
+
+def _avisar_do_teto_para_fp8() -> None:
+    """O fp8 poe ~13 GB do transformer na memoria do processo, que conta no
+    MemoryMax do servico e nao vai para o swap: com o teto baixo, o kernel
+    mata o servico no meio da animacao. Avisa na subida, e nao no meio dela."""
+    if "fp8" not in {precisao for _, precisao in catalogo().values()}:
+        return
+    teto = os.environ.get("WORKER_MEMORY_MAX", "18G").strip().upper()
+    try:
+        gb = float(teto[:-1]) * {"G": 1, "M": 1 / 1024, "T": 1024}[teto[-1]]
+    except (KeyError, ValueError, IndexError):
+        return
+    if gb < 21:
+        logger.warning(
+            "Ha modelo fp8 em ANIMACAO_MODELOS e WORKER_MEMORY_MAX=%s. O fp8 poe ~13 GB do "
+            "transformer na memoria do processo: com menos de 21G o kernel pode matar o servico "
+            "no meio da animacao. Suba o WORKER_MEMORY_MAX e rode ./deploy/instalar.sh.",
+            teto,
         )
 
 
@@ -163,6 +218,8 @@ def _comando(trabalho: Trabalho, imagem: Path) -> list[str]:
         "--memoria-preservada", str(ANIMACAO_MEMORIA_PRESERVADA),
         "--ram-fixa-gb", str(ANIMACAO_RAM_FIXA_GB),
     ]  # fmt: skip
+    repositorio, precisao = catalogo()[trabalho.modelo]
+    comando += ["--transformer", repositorio, "--precisao", precisao]
     comando += ["--semente", str(trabalho.semente)]
     if trabalho.medidas:
         comando += ["--largura", str(trabalho.medidas[0]), "--altura", str(trabalho.medidas[1])]
@@ -220,7 +277,9 @@ def _gerar(trabalho: Trabalho, imagem: Path, posse) -> None:
         logger.exception("Animacao %s quebrou.", trabalho.id)
     finally:
         trabalho.concluido = int(time.time())
-        _ultimo.update(segundos=trabalho.segundos, tempo=round(trabalho.duracao))
+        _ultimo.update(
+            segundos=trabalho.segundos, tempo=round(trabalho.duracao), modelo=trabalho.modelo
+        )
         posse.__exit__(None, None, None)
 
 
@@ -297,7 +356,9 @@ def criar(
     size: str | None = Form(default=None),
     seed: str | None = Form(default=None),
 ):
-    """`model` e aceito e ignorado (aqui e sempre o FramePack).
+    """`model` escolhe o modelo do catalogo (`ANIMACAO_MODELOS`, hoje
+    `framepack` e `framepack-fp8`); fora dele, vale o padrao. O usado volta em
+    `model` no trabalho.
 
     `size` e respeitado: o FramePack gera nele (em multiplos de 32), so
     reduzindo se passar do teto da `ANIMACAO_RESOLUCAO`; a imagem e cortada ao
@@ -329,7 +390,8 @@ def criar(
     except ValueError as exc:
         return _invalido(str(exc))
 
-    posse = ARBITRO.usar("animacao", modelo=MODELO)
+    modelo = escolher_modelo(model)
+    posse = ARBITRO.usar("animacao", modelo=modelo)
     try:
         posse.__enter__()
     except GpuOcupada as erro:
@@ -346,6 +408,7 @@ def criar(
         pasta=pasta,
         semente=semente,
         medidas=medidas,
+        modelo=modelo,
     )
     with _mural:
         _trabalhos[trabalho.id] = trabalho
@@ -396,6 +459,11 @@ def estado() -> dict:
         lista = list(_trabalhos.values())
     return {
         "motor": MODELO,
+        # O catalogo e o padrao. Quem tem uma fila de cenas prefere pedir o
+        # mesmo modelo do ultimo trabalho (`ultimo.modelo`): os dois leem o
+        # mesmo arquivo, mas o cache de disco ja esta quente para ele.
+        "modelos": {nome: precisao for nome, (_, precisao) in catalogo().items()},
+        "modelo_padrao": escolher_modelo(None),
         "framepack_dir": FRAMEPACK_DIR,
         "resolucao": ANIMACAO_RESOLUCAO,
         "passos": ANIMACAO_PASSOS,
@@ -417,6 +485,7 @@ def estado() -> dict:
                 "status": t.status,
                 "progress": t.progresso,
                 "seconds": t.segundos,
+                "model": t.modelo,
                 "ha_segundos": int(time.time()) - t.criado,
             }
             for t in lista

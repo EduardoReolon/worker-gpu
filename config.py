@@ -444,6 +444,28 @@ ANIMACAO_MEMORIA_PRESERVADA = _decimal("ANIMACAO_MEMORIA_PRESERVADA", 6.0)
 # inteiro. So subir o teto ou um transformer menor (fp8) diminuem a falta.
 # Fica desligado; a opcao continua para experimentos.
 ANIMACAO_RAM_FIXA_GB = _decimal("ANIMACAO_RAM_FIXA_GB", 0.0)
+
+# Os modelos de animacao que o cliente pode pedir, pelo `model` do pedido:
+# `nome=repositorio:precisao`, separados por virgula. Precisao `bf16` (o
+# original) ou `fp8`.
+#
+# O fp8 e o MESMO transformer, convertido na memoria a cada trabalho: as
+# camadas pesadas viram fp8 (~13 GB, em vez de ~26) e voltam a bf16 na placa,
+# camada a camada, na hora da conta. Com o modelo inteiro na memoria, o disco
+# sai do caminho — numa maquina de 32 GB com uma VM ao lado, o bf16 relia ~9,5
+# GB do disco por passo. Perde um pouco de detalhe fino. Os ~13 GB contam no
+# MemoryMax do servico: com fp8, WORKER_MEMORY_MAX=21G ou mais.
+#
+# Um modelo maior no futuro entra aqui como mais uma entrada, desde que seja
+# da mesma arquitetura (HunyuanVideoTransformer3DModelPacked).
+ANIMACAO_MODELOS = os.environ.get(
+    "ANIMACAO_MODELOS",
+    "framepack=lllyasviel/FramePackI2V_HY:bf16,framepack-fp8=lllyasviel/FramePackI2V_HY:fp8",
+).strip()
+
+# O modelo de quem nao pede nenhum do catalogo (o `model` vem vazio, ou e o
+# nome de outro provedor, como `sora-2`).
+ANIMACAO_MODELO_PADRAO = os.environ.get("ANIMACAO_MODELO_PADRAO", "framepack").strip()
 ANIMACAO_SEGUNDOS_MAXIMOS = _inteiro("ANIMACAO_SEGUNDOS_MAXIMOS", 5)
 # Teto de um trabalho. Passou: o processo do FramePack e encerrado e o trabalho
 # vira `failed` com `timeout`.

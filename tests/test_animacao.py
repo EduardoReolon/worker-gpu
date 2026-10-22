@@ -22,6 +22,8 @@ for a in ("--framepack-dir", "--imagem", "--prompt", "--segundos", "--saida", "-
 p.add_argument("--teacache", action="store_true")
 p.add_argument("--semente")
 p.add_argument("--ram-fixa-gb")
+p.add_argument("--transformer")
+p.add_argument("--precisao")
 p.add_argument("--largura", default="")
 p.add_argument("--altura", default="")
 args = p.parse_args()
@@ -31,7 +33,7 @@ if "quebre" in args.prompt:
 for n in (10, 50, 90):
     print(f"PROGRESSO {n}", flush=True)
 open(args.saida, "wb").write(
-    f"MP4:{args.prompt}|semente={args.semente}|{args.largura}x{args.altura}".encode()
+    f"MP4:{args.prompt}|semente={args.semente}|{args.precisao}|{args.largura}x{args.altura}".encode()
 )
 """
 
@@ -221,5 +223,54 @@ def test_o_health_mostra_o_trabalho_em_curso_com_o_progresso(cliente, cabecalhos
     _esperar(cliente, cabecalhos, trabalho["id"])
 
     assert [t["id"] for t in em_curso] == [trabalho["id"]]
-    assert set(em_curso[0]) == {"id", "status", "progress", "seconds", "ha_segundos"}
+    assert set(em_curso[0]) == {"id", "status", "progress", "seconds", "model", "ha_segundos"}
     assert animacao_mod.estado()["em_curso"] == []
+
+
+# ---------------------------------------------------------------------------
+# O modelo pelo `model` do pedido (fp8 ou o original)
+# ---------------------------------------------------------------------------
+def test_o_model_do_pedido_escolhe_o_modelo_e_volta_no_trabalho(cliente, cabecalhos):
+    pronto, video = _video(cliente, cabecalhos, model="framepack-fp8")
+
+    assert pronto["model"] == "framepack-fp8"
+    assert b"|fp8|" in video
+
+
+def test_model_de_outro_provedor_usa_o_padrao(cliente, cabecalhos):
+    """O cliente manda o `model` da conexao, que pode ser `sora-2`: recusar
+    quebraria quem so troca o endereco."""
+    pronto, video = _video(cliente, cabecalhos, model="sora-2")
+
+    assert pronto["model"] == "framepack"
+    assert b"|bf16|" in video
+
+
+def test_o_catalogo_vem_do_env(animacao_mod, monkeypatch):
+    monkeypatch.setattr(
+        animacao_mod, "ANIMACAO_MODELOS", "a=org/um:bf16, b=org/dois:fp8, ruim=sem-precisao"
+    )
+
+    assert animacao_mod.catalogo() == {"a": ("org/um", "bf16"), "b": ("org/dois", "fp8")}
+
+
+def test_o_health_mostra_os_modelos_e_o_padrao(animacao_mod):
+    estado = animacao_mod.estado()
+
+    assert estado["modelos"] == {"framepack": "bf16", "framepack-fp8": "fp8"}
+    assert estado["modelo_padrao"] == "framepack"
+
+
+def test_avisa_na_subida_se_o_teto_nao_comporta_o_fp8(animacao_mod, monkeypatch, caplog):
+    import logging
+
+    monkeypatch.setenv("WORKER_MEMORY_MAX", "18G")
+    with caplog.at_level(logging.WARNING, logger="worker-gpu.animacao"):
+        animacao_mod._avisar_do_teto_para_fp8()
+    assert "21G" in caplog.text
+
+    caplog.clear()
+    monkeypatch.setenv("WORKER_MEMORY_MAX", "22G")
+    with caplog.at_level(logging.WARNING, logger="worker-gpu.animacao"):
+        animacao_mod._avisar_do_teto_para_fp8()
+    assert caplog.text == ""

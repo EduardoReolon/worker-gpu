@@ -37,6 +37,9 @@ def _argumentos():
     # GB do transformer copiados para a memoria do processo (veja `_fixar_na_ram`).
     p.add_argument("--ram-fixa-gb", type=float, default=0.0)
     p.add_argument("--semente", type=int, default=31337)
+    # O transformer (repositorio no HuggingFace) e a precisao em que ele roda.
+    p.add_argument("--transformer", default="lllyasviel/FramePackI2V_HY")
+    p.add_argument("--precisao", choices=("bf16", "fp8"), default="bf16")
     # O tamanho pedido pelo cliente, ja em multiplos de 32. 0: o formato da
     # grade do FramePack mais perto da imagem, na `--resolucao`.
     p.add_argument("--largura", type=int, default=0)
@@ -63,6 +66,49 @@ def _devolver_memoria(torch) -> None:
             ctypes.CDLL(nome).malloc_trim(0)
         except (OSError, AttributeError):
             pass
+
+
+def _converter_para_fp8(transformer, torch) -> None:
+    """As camadas lineares dos blocos do transformer em fp8 (float8_e4m3fn).
+
+    Sao ~95% dos pesos: o modelo cai de ~26 GB para ~13 GB e passa a caber
+    inteiro na memoria do processo, e o disco sai do caminho. Normas, vieses,
+    embeddings e as pontas do modelo ficam em bf16 — sao pequenos e sensiveis.
+
+    A placa nao faz conta em fp8 aqui: cada linear convertida volta a bf16 na
+    hora de rodar (`_linear_fp8`), ja na placa. Sobe metade dos bytes pelo
+    PCIe e perde um pouco de detalhe fino, como no "fp8_e4m3fn" do ComfyUI.
+
+    Depois de soltar os codificadores, e nao antes: com o de texto (~16 GB)
+    ainda na memoria, os dois juntos estourariam o MemoryMax do servico.
+    """
+    import types
+
+    convertidos = 0
+    for nome, modulo in transformer.named_modules():
+        if "transformer_blocks" not in nome or not isinstance(modulo, torch.nn.Linear):
+            continue
+        # Pelo `_parameters`, e nao por `modulo.weight`: o DynamicSwapInstaller
+        # intercepta o atributo e devolve uma COPIA ja na placa — converter a
+        # copia nao mudaria nada, e cada acesso subiria o peso para a VRAM.
+        peso = modulo._parameters["weight"]
+        peso.data = peso.data.to(torch.float8_e4m3fn)
+        modulo.forward = types.MethodType(_linear_fp8, modulo)
+        convertidos += peso.numel()
+    print(f"FP8 {convertidos / 1024**3:.1f} G parametros convertidos", flush=True)
+
+
+def _linear_fp8(self, entrada):
+    """O `forward` de uma linear com o peso em fp8: volta a bf16 na placa.
+
+    Aqui `self.weight` passa pelo DynamicSwapInstaller e ja chega na placa,
+    ainda em fp8 (metade dos bytes pelo PCIe); a conversao e feita la.
+    """
+    import torch
+
+    peso = self.weight.to(entrada.dtype)
+    vies = self.bias.to(entrada.dtype) if self.bias is not None else None
+    return torch.nn.functional.linear(entrada, peso, vies)
 
 
 def _fixar_na_ram(transformer, gb: float) -> None:
@@ -160,7 +206,7 @@ def main() -> int:
         redux, subfolder="image_encoder", torch_dtype=f16
     ).cpu()
     transformer = HunyuanVideoTransformer3DModelPacked.from_pretrained(
-        "lllyasviel/FramePackI2V_HY", torch_dtype=torch.bfloat16
+        args.transformer, torch_dtype=torch.bfloat16
     ).cpu()
     for modelo in (vae, text_encoder, text_encoder_2, image_encoder, transformer):
         modelo.eval()
@@ -217,7 +263,10 @@ def main() -> int:
         del text_encoder, text_encoder_2, image_encoder, feature_extractor
         del tokenizer, tokenizer_2
         _devolver_memoria(torch)
-        if args.ram_fixa_gb > 0:
+        if args.precisao == "fp8":
+            _converter_para_fp8(transformer, torch)
+            _devolver_memoria(torch)
+        elif args.ram_fixa_gb > 0:
             _fixar_na_ram(transformer, args.ram_fixa_gb)
         _progresso(5)
 
