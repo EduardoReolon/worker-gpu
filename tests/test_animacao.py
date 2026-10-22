@@ -21,6 +21,7 @@ for a in ("--framepack-dir", "--imagem", "--prompt", "--segundos", "--saida", "-
     p.add_argument(a)
 p.add_argument("--teacache", action="store_true")
 p.add_argument("--semente")
+p.add_argument("--ram-fixa-gb")
 p.add_argument("--largura", default="")
 p.add_argument("--altura", default="")
 args = p.parse_args()

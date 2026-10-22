@@ -428,6 +428,21 @@ ANIMACAO_TEACACHE = _booleano("ANIMACAO_TEACACHE", True)
 # Quanto da VRAM o FramePack deixa livre ao subir o modelo (GB). Maior = mais
 # lento e mais folgado; em 8 GB, 6 funcionou (chegou a 7,7 GB).
 ANIMACAO_MEMORIA_PRESERVADA = _decimal("ANIMACAO_MEMORIA_PRESERVADA", 6.0)
+
+# GB do transformer do FramePack (~26 GB) fixados na memoria do processo. 0
+# desliga.
+#
+# O transformer fica mapeado do disco e e lido inteiro a cada passo. Sem
+# cache para ele inteiro, o kernel descarta sempre o trecho mais antigo — o
+# primeiro que o passo seguinte le — e o modelo todo volta do disco a cada
+# passo: GPU pela metade, esperando o disco. Fixar N GB faz so o resto
+# (26 - N) ser relido.
+#
+# A parte fixa CONTA no `MemoryMax` do servico (o FramePack roda dentro dele)
+# e nao pode ir para o swap: suba o WORKER_MEMORY_MAX junto, com folga para o
+# resto do processo (~5 GB), e rode `./deploy/instalar.sh`. Numa maquina de
+# 32 GB com uma VM ao lado: 12 a 14 aqui, com WORKER_MEMORY_MAX=22G.
+ANIMACAO_RAM_FIXA_GB = _decimal("ANIMACAO_RAM_FIXA_GB", 0.0)
 ANIMACAO_SEGUNDOS_MAXIMOS = _inteiro("ANIMACAO_SEGUNDOS_MAXIMOS", 5)
 # Teto de um trabalho. Passou: o processo do FramePack e encerrado e o trabalho
 # vira `failed` com `timeout`.

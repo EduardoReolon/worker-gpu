@@ -34,6 +34,8 @@ def _argumentos():
     p.add_argument("--passos", type=int, default=25)
     p.add_argument("--memoria-preservada", type=float, default=6.0)
     p.add_argument("--teacache", action="store_true")
+    # GB do transformer copiados para a memoria do processo (veja `_fixar_na_ram`).
+    p.add_argument("--ram-fixa-gb", type=float, default=0.0)
     p.add_argument("--semente", type=int, default=31337)
     # O tamanho pedido pelo cliente, ja em multiplos de 32. 0: o formato da
     # grade do FramePack mais perto da imagem, na `--resolucao`.
@@ -61,6 +63,33 @@ def _devolver_memoria(torch) -> None:
             ctypes.CDLL(nome).malloc_trim(0)
         except (OSError, AttributeError):
             pass
+
+
+def _fixar_na_ram(transformer, gb: float) -> None:
+    """Copia os primeiros `gb` do transformer para a memoria do processo.
+
+    O transformer (~26 GB) fica mapeado do disco, e a cada passo da difusao e
+    lido inteiro, do comeco ao fim. Quando o cache nao comporta tudo, o kernel
+    descarta sempre o trecho lido ha mais tempo — que e o primeiro que o passo
+    seguinte vai ler. Resultado: o modelo INTEIRO volta do disco a cada passo.
+
+    Copiado, um tensor deixa de ser pagina de arquivo: vira memoria do
+    processo, que nao e descartada (e, com `MemorySwapMax=0` na unit, nem vai
+    para o swap). So o resto continua mapeado e e relido. Com 14 de 26 GB
+    fixos, cada passo le ~12 GB do disco, e nao ~26.
+
+    Depois de soltar os codificadores, e nao antes: com o de texto (~16 GB)
+    ainda na memoria, os dois juntos estourariam o `MemoryMax` do servico.
+    """
+    limite = int(gb * 1024**3)
+    fixado = 0
+    for parametro in transformer.parameters():
+        tamanho = parametro.numel() * parametro.element_size()
+        if fixado + tamanho > limite:
+            break
+        parametro.data = parametro.data.clone()
+        fixado += tamanho
+    print(f"FIXADOS {fixado / 1024**3:.1f} GB do transformer na RAM", flush=True)
 
 
 def _progresso(porcento: float) -> None:
@@ -188,6 +217,8 @@ def main() -> int:
         del text_encoder, text_encoder_2, image_encoder, feature_extractor
         del tokenizer, tokenizer_2
         _devolver_memoria(torch)
+        if args.ram_fixa_gb > 0:
+            _fixar_na_ram(transformer, args.ram_fixa_gb)
         _progresso(5)
 
         rnd = torch.Generator("cpu").manual_seed(args.semente)

@@ -58,6 +58,7 @@ from config import (
     ANIMACAO_MEMORIA_PRESERVADA,
     ANIMACAO_PASSOS,
     ANIMACAO_PYTHON,
+    ANIMACAO_RAM_FIXA_GB,
     ANIMACAO_RESOLUCAO,
     ANIMACAO_SEGUNDOS_MAXIMOS,
     ANIMACAO_TEACACHE,
@@ -160,6 +161,7 @@ def _comando(trabalho: Trabalho, imagem: Path) -> list[str]:
         "--resolucao", str(ANIMACAO_RESOLUCAO),
         "--passos", str(ANIMACAO_PASSOS),
         "--memoria-preservada", str(ANIMACAO_MEMORIA_PRESERVADA),
+        "--ram-fixa-gb", str(ANIMACAO_RAM_FIXA_GB),
     ]  # fmt: skip
     comando += ["--semente", str(trabalho.semente)]
     if trabalho.medidas:
@@ -398,6 +400,7 @@ def estado() -> dict:
         "resolucao": ANIMACAO_RESOLUCAO,
         "passos": ANIMACAO_PASSOS,
         "teacache": ANIMACAO_TEACACHE,
+        "ram_fixa_gb": ANIMACAO_RAM_FIXA_GB,
         "tempo_maximo": ANIMACAO_TEMPO_MAXIMO,
         "trabalhos": {
             "em_curso": sum(t.status in ("queued", "in_progress") for t in lista),

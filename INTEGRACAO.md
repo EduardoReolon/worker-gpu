@@ -982,8 +982,27 @@ ANIMACAO_ATIVA=sim
 # ANIMACAO_RESOLUCAO=640    # 512 ou 480: bem mais rapido; o Instagram mostra menor
 # ANIMACAO_TEACACHE=sim
 # ANIMACAO_MEMORIA_PRESERVADA=6
+# ANIMACAO_RAM_FIXA_GB=0    # GB do transformer fixados na RAM; veja abaixo
 # ANIMACAO_TEMPO_MAXIMO=3600
 ```
+
+**Quando a animação fica presa no disco.** O transformer (~26 GB) é lido
+inteiro a cada passo. Sem cache para ele todo, o kernel descarta sempre o
+trecho mais antigo, que é o primeiro do passo seguinte, e o modelo inteiro
+volta do disco a cada passo: a GPU fica pela metade e o `bi` do `vmstat`, alto
+e contínuo. O FramePack roda dentro do serviço do worker, então o cache dele
+também conta no `WORKER_MEMORY_MAX`. Confira:
+
+```bash
+CG=/sys/fs/cgroup$(systemctl --user show worker-gpu -p ControlGroup --value)
+awk '$1=="anon"||$1=="file"{printf "%s: %.1f GB\n",$1,$2/1073741824}' $CG/memory.stat
+grep ^max $CG/memory.events     # subindo durante a animacao: o teto esta espremendo o cache
+```
+
+`ANIMACAO_RAM_FIXA_GB=N` copia os primeiros N GB do transformer para a memória
+do processo, que não é descartada: só o resto (26 − N) é relido. Essa parte
+conta no `WORKER_MEMORY_MAX` e não vai para o swap: suba os dois juntos
+(por exemplo 14 e `WORKER_MEMORY_MAX=22G`) e rode `./deploy/instalar.sh`.
 
 **Como funciona por dentro:**
 1. O worker toma a placa e solta o Ollama e os modelos residentes (imagem,
