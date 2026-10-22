@@ -42,6 +42,27 @@ def _argumentos():
     return p.parse_args()
 
 
+def _devolver_memoria(torch) -> None:
+    """Coleta, esvazia a cache da placa e devolve a RAM livre ao sistema.
+
+    Sem o `malloc_trim`, a memoria dos modelos soltos volta ao alocador da
+    glibc e nao ao sistema — e o kernel nao a usa para o cache do transformer.
+    """
+    import ctypes
+    import ctypes.util
+    import gc
+
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    nome = ctypes.util.find_library("c")
+    if nome:
+        try:
+            ctypes.CDLL(nome).malloc_trim(0)
+        except (OSError, AttributeError):
+            pass
+
+
 def _progresso(porcento: float) -> None:
     print(f"PROGRESSO {porcento:.0f}", flush=True)
 
@@ -154,6 +175,19 @@ def main() -> int:
         llama_vec, llama_vec_n = llama_vec.to(dt), llama_vec_n.to(dt)
         clip_pooler, clip_pooler_n = clip_pooler.to(dt), clip_pooler_n.to(dt)
         visao = visao.to(dt)
+
+        # Os codificadores ja fizeram o trabalho deles: o prompt e a imagem
+        # viraram vetores. Soltar AGORA, e nao no fim, e o que deixa a difusao
+        # rodar na velocidade da placa. O codificador de texto (Llama 8B em
+        # fp16, ~16 GB) ficava na RAM ate o processo terminar, e o transformer
+        # (~26 GB, mapeado do disco) nao cabia mais no cache: a cada passo era
+        # relido do disco (~275 MB/s medidos), com a GPU a 20%. O
+        # `demo_gradio.py` os mantem porque atende varios pedidos; este
+        # processo atende um so.
+        unload_complete_models()
+        del text_encoder, text_encoder_2, image_encoder, feature_extractor
+        del tokenizer, tokenizer_2
+        _devolver_memoria(torch)
         _progresso(5)
 
         rnd = torch.Generator("cpu").manual_seed(args.semente)
