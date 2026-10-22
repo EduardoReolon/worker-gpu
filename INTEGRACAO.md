@@ -999,6 +999,12 @@ awk '$1=="anon"||$1=="file"{printf "%s: %.1f GB\n",$1,$2/1073741824}' $CG/memory
 grep ^max $CG/memory.events     # subindo durante a animacao: o teto esta espremendo o cache
 ```
 
+Para medir isso de uma vez e receber uma sugestão, rode durante uma animação
+`python3 afericao.py` (5 min; `--minutos 10` para mais). Ele grava em
+`medicoes/afericao-<data>.md` o relatório (GPU, disco, RAM, o que está fora do
+worker, como uma VM), a sugestão de `.env` e um prompt pronto para conversar
+com uma LLM antes de comprometer RAM.
+
 `ANIMACAO_RAM_FIXA_GB=N` copia os primeiros N GB do transformer para a memória
 do processo, que não é descartada: só o resto (26 − N) é relido. Essa parte
 conta no `WORKER_MEMORY_MAX` e não vai para o swap: suba os dois juntos
