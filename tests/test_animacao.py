@@ -210,3 +210,15 @@ def test_o_tamanho_so_e_reduzido_nunca_aumentado(animacao_mod, pedido, esperado)
 
 def test_size_invalido_e_422(cliente, cabecalhos):
     assert _criar(cliente, cabecalhos, size="grande").status_code == 422
+
+
+def test_o_health_mostra_o_trabalho_em_curso_com_o_progresso(cliente, cabecalhos, animacao_mod):
+    """Sem o id que o cliente guardou, era o unico jeito de saber se o
+    trabalho anda ou se a placa ficou presa."""
+    trabalho = _criar(cliente, cabecalhos).json()
+    em_curso = animacao_mod.estado()["em_curso"]
+    _esperar(cliente, cabecalhos, trabalho["id"])
+
+    assert [t["id"] for t in em_curso] == [trabalho["id"]]
+    assert set(em_curso[0]) == {"id", "status", "progress", "seconds", "ha_segundos"}
+    assert animacao_mod.estado()["em_curso"] == []

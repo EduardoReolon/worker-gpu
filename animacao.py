@@ -188,7 +188,17 @@ def _gerar(trabalho: Trabalho, imagem: Path, posse) -> None:
         for linha in processo.stdout:
             linha = linha.rstrip()
             if linha.startswith("PROGRESSO "):
-                trabalho.progresso = min(99, int(float(linha.split()[1])))
+                novo = min(99, int(float(linha.split()[1])))
+                # No journal a cada 10%: e o que diz, de fora e sem o id, que
+                # o trabalho anda — e nao que a placa ficou presa.
+                if novo // 10 > trabalho.progresso // 10:
+                    logger.info(
+                        "Animacao %s: %s%% em %.0f min.",
+                        trabalho.id,
+                        novo,
+                        (time.monotonic() - inicio) / 60,
+                    )
+                trabalho.progresso = novo
             else:
                 saida_do_processo.append(linha)
                 del saida_do_processo[:-40]
@@ -395,4 +405,18 @@ def estado() -> dict:
             "falhos": sum(t.status == "failed" for t in lista),
         },
         "ultimo": dict(_ultimo) or None,
+        # O trabalho na placa agora, se houver: o `progress` e ha quanto tempo
+        # roda. Sem isto, "esta processando ou travou?" so se respondia com o
+        # id que o cliente guardou.
+        "em_curso": [
+            {
+                "id": t.id,
+                "status": t.status,
+                "progress": t.progresso,
+                "seconds": t.segundos,
+                "ha_segundos": int(time.time()) - t.criado,
+            }
+            for t in lista
+            if t.status in ("queued", "in_progress")
+        ],
     }
