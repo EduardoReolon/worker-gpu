@@ -73,22 +73,31 @@ def test_o_tempo_por_passo_sai_do_progresso(afericao):
     assert analise["passo_s"] == pytest.approx(300 / (34 / 1.8))
 
 
-def test_a_sugestao_usa_a_ram_que_sobra_e_respeita_a_reserva(afericao):
+def test_a_sugestao_sobe_o_teto_e_mostra_a_falta_de_cache(afericao):
     medicao = _medicao(disponivel=20.0, anon=4.9)
     sugestao = afericao.sugerir(medicao, afericao.analisar(medicao))
 
     # 30 de RAM, 10 usados (5,1 fora do worker), reserva de 4: teto 20.
     assert sugestao["WORKER_MEMORY_MAX"] == "20G"
-    # Dentro do teto: 4,9 de memoria propria + 2 de folga -> 13 fixos.
-    assert sugestao["ANIMACAO_RAM_FIXA_GB"] == 13
+    # Falta = 25,7 + 4,9 - teto: 12,6 hoje (18), 10,6 com o sugerido (20).
+    assert sugestao["falta_atual_gb"] == pytest.approx(12.6)
+    assert sugestao["falta_gb"] == pytest.approx(10.6)
+    assert "fp8" in sugestao["motivo"]
     assert sugestao["vms"]
 
 
-def test_com_gpu_cheia_nao_sugere_fixar(afericao):
+def test_fixar_camadas_nunca_e_sugerido(afericao):
+    """O que se fixa sai do mesmo teto que o cache: a falta nao muda. Foi uma
+    sugestao errada de uma versao anterior (fixar 12 GB com o teto em 20)."""
+    for gpu, disco in ((55, 350), (92, 20)):
+        medicao = _medicao(gpu=gpu, disco=disco)
+        assert afericao.sugerir(medicao, afericao.analisar(medicao))["ANIMACAO_RAM_FIXA_GB"] == 0
+
+
+def test_com_gpu_cheia_diz_que_ram_nao_ajuda(afericao):
     medicao = _medicao(gpu=92, disco=20)
     sugestao = afericao.sugerir(medicao, afericao.analisar(medicao))
 
-    assert sugestao["ANIMACAO_RAM_FIXA_GB"] == 0
     assert "quase nao muda" in sugestao["motivo"]
 
 
@@ -97,7 +106,6 @@ def test_o_teto_sugerido_nunca_e_menor_que_o_atual(afericao):
     sugestao = afericao.sugerir(medicao, afericao.analisar(medicao))
 
     assert sugestao["WORKER_MEMORY_MAX"] == "18G"
-    assert sugestao["ANIMACAO_RAM_FIXA_GB"] == 0
 
 
 def test_o_prompt_manda_a_llm_perguntar_antes_e_leva_o_relatorio(afericao):

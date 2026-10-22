@@ -438,10 +438,11 @@ ANIMACAO_MEMORIA_PRESERVADA = _decimal("ANIMACAO_MEMORIA_PRESERVADA", 6.0)
 # passo: GPU pela metade, esperando o disco. Fixar N GB faz so o resto
 # (26 - N) ser relido.
 #
-# A parte fixa CONTA no `MemoryMax` do servico (o FramePack roda dentro dele)
-# e nao pode ir para o swap: suba o WORKER_MEMORY_MAX junto, com folga para o
-# resto do processo (~5 GB), e rode `./deploy/instalar.sh`. Numa maquina de
-# 32 GB com uma VM ao lado: 12 a 14 aqui, com WORKER_MEMORY_MAX=22G.
+# CUIDADO: medido, isto NAO resolveu. A parte fixa sai do mesmo `MemoryMax`
+# que o cache, entao o que falta de cache (transformer + memoria propria -
+# teto) nao muda; e o kernel ja relia ~9,5 GB por passo, nao o modelo
+# inteiro. So subir o teto ou um transformer menor (fp8) diminuem a falta.
+# Fica desligado; a opcao continua para experimentos.
 ANIMACAO_RAM_FIXA_GB = _decimal("ANIMACAO_RAM_FIXA_GB", 0.0)
 ANIMACAO_SEGUNDOS_MAXIMOS = _inteiro("ANIMACAO_SEGUNDOS_MAXIMOS", 5)
 # Teto de um trabalho. Passou: o processo do FramePack e encerrado e o trabalho

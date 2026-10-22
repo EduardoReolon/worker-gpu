@@ -1005,10 +1005,13 @@ Para medir isso de uma vez e receber uma sugestão, rode durante uma animação
 worker, como uma VM), a sugestão de `.env` e um prompt pronto para conversar
 com uma LLM antes de comprometer RAM.
 
-`ANIMACAO_RAM_FIXA_GB=N` copia os primeiros N GB do transformer para a memória
-do processo, que não é descartada: só o resto (26 − N) é relido. Essa parte
-conta no `WORKER_MEMORY_MAX` e não vai para o swap: suba os dois juntos
-(por exemplo 14 e `WORKER_MEMORY_MAX=22G`) e rode `./deploy/instalar.sh`.
+O que falta de cache é, aproximadamente, transformer (~26 GB) + memória
+própria do serviço (~5 GB) − `WORKER_MEMORY_MAX`. Só duas coisas diminuem isso:
+subir o teto (tirando RAM do resto da máquina) ou um transformer menor (em fp8,
+~13 GB). `ANIMACAO_RAM_FIXA_GB` (fixar N GB do transformer na memória do
+processo) existe, mas **não diminui a falta**: a parte fixa sai do mesmo teto
+que o cache. Medido numa máquina de 30 GB: o kernel já relia só ~9,5 GB por
+passo, e não o modelo inteiro.
 
 **Como funciona por dentro:**
 1. O worker toma a placa e solta o Ollama e os modelos residentes (imagem,

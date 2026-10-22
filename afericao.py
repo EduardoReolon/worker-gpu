@@ -39,8 +39,6 @@ RAIZ = Path(__file__).resolve().parent
 TRANSFORMER_GB = 25.7
 # O que fica de fora para o desktop, o cache dos outros programas e folga.
 RESERVA_GB = 4.0
-# Folga dentro do servico, alem da memoria propria dele.
-MARGEM_GB = 2.0
 # Nomes de processos de maquina virtual: a memoria deles e reservada inteira
 # quando a VM liga, mesmo que agora pareca pouca.
 NOMES_DE_VM = ("qemu", "virtualbox", "vboxheadless", "vmware", "vmx")
@@ -322,25 +320,29 @@ def sugerir(medicao: dict, analise: dict) -> dict:
 
     fixa_atual = float(medicao["config"]["ANIMACAO_RAM_FIXA_GB"] or 0)
     base = max(0.0, (servico_fim.get("anon_gb") or 0) - fixa_atual)
-
-    teto = math.floor(total - fora - RESERVA_GB)
-    fixa = math.floor(min(teto - base - MARGEM_GB, TRANSFORMER_GB - 1))
-    fixa = max(0, fixa)
-
     teto_atual = _gb_da_config(medicao["config"]["WORKER_MEMORY_MAX"])
+    teto = max(math.floor(total - fora - RESERVA_GB), math.ceil(teto_atual))
+
+    # O que falta para o transformer caber inteiro no cache do servico. NAO
+    # depende de fixar camadas (ANIMACAO_RAM_FIXA_GB): o que se fixa sai do
+    # mesmo teto que o cache, e a conta e a mesma. So diminui subindo o teto
+    # ou diminuindo o modelo (o transformer em fp8 tem ~13 GB).
+    falta_atual = max(0.0, TRANSFORMER_GB + base - teto_atual)
+    falta = max(0.0, TRANSFORMER_GB + base - teto)
+    falta_fp8 = max(0.0, TRANSFORMER_GB / 2 + base - teto_atual)
+
     if analise["gargalo"] == "sem_animacao":
         motivo = "sem animacao em curso nao da para saber o gargalo: afira durante uma."
     elif analise["gargalo"] == "gpu":
         motivo = "a GPU ja trabalha quase o tempo todo: mais RAM quase nao muda o tempo."
-    elif fixa < 4:
-        motivo = (
-            "nao sobra RAM para fixar uma parte que valha a pena; alternativas: menos passos "
-            "(ANIMACAO_PASSOS) ou mais RAM."
-        )
+    elif falta == 0:
+        motivo = "com este teto o transformer cabe inteiro no cache: o disco sai do caminho."
     else:
         motivo = (
-            f"o disco limita: fixando {fixa} GB, cada passo releria ~{TRANSFORMER_GB - fixa:.0f} "
-            f"GB em vez de ~{TRANSFORMER_GB:.0f} GB."
+            f"o disco limita: hoje faltam ~{falta_atual:.0f} GB de cache para o transformer; "
+            f"com este teto, ~{falta:.0f} GB. Para zerar sem mais RAM, so o transformer em "
+            f"fp8 (~{TRANSFORMER_GB / 2:.0f} GB), que no teto atual deixaria faltar "
+            f"~{falta_fp8:.0f} GB."
         )
 
     return {
@@ -349,12 +351,12 @@ def sugerir(medicao: dict, analise: dict) -> dict:
         "vms": vms,
         "base_gb": base,
         "teto_atual_gb": teto_atual,
-        "WORKER_MEMORY_MAX": f"{max(teto, math.ceil(teto_atual))}G",
-        # Menos de 4 GB fixos nao muda o tempo de um modelo de 26: so aperta a RAM.
-        "ANIMACAO_RAM_FIXA_GB": fixa
-        if analise["gargalo"] in ("disco", "misto") and fixa >= 4
-        else 0,
-        "fixa_possivel_gb": fixa,
+        "falta_atual_gb": falta_atual,
+        "falta_gb": falta,
+        "falta_fp8_gb": falta_fp8,
+        "WORKER_MEMORY_MAX": f"{teto}G",
+        # Fixar camadas nao reduz a falta (veja acima): fica desligado.
+        "ANIMACAO_RAM_FIXA_GB": 0,
         "motivo": motivo,
     }
 
@@ -426,9 +428,11 @@ def relatorio(medicao: dict, analise: dict, sugestao: dict) -> str:
         f"- WORKER_MEMORY_MAX={sugestao['WORKER_MEMORY_MAX']}",
         f"- ANIMACAO_RAM_FIXA_GB={sugestao['ANIMACAO_RAM_FIXA_GB']}",
         f"- Por que: {sugestao['motivo']}",
-        f"- Conta: {sugestao['total_gb']:.0f} GB de RAM - {sugestao['fora_gb']:.1f} GB fora do "
-        f"worker - {RESERVA_GB:.0f} GB de reserva = teto; dentro dele, "
-        f"{sugestao['base_gb']:.1f} GB de memoria propria + {MARGEM_GB:.0f} GB de folga.",
+        f"- Conta do teto: {sugestao['total_gb']:.0f} GB de RAM - {sugestao['fora_gb']:.1f} GB "
+        f"fora do worker - {RESERVA_GB:.0f} GB de reserva. Cache que falta para o transformer "
+        f"(~{TRANSFORMER_GB:.0f} GB + {sugestao['base_gb']:.1f} GB de memoria propria - teto): "
+        f"hoje ~{sugestao['falta_atual_gb']:.0f} GB, com o teto sugerido "
+        f"~{sugestao['falta_gb']:.0f} GB.",
         "- Aplicar: editar o `.env` e rodar `./deploy/instalar.sh` ENTRE animacoes (o restart "
         "cancela a que estiver rodando).",
     ]
@@ -440,13 +444,14 @@ def prompt(texto_do_relatorio: str) -> str:
 
 Contexto: o "worker-gpu" e um servico (systemd de usuario) que gera texto, imagem e
 video numa placa de 8 GB. O video e o FramePack: um transformer de ~{TRANSFORMER_GB:.0f} GB que
-fica mapeado do disco e e lido INTEIRO a cada passo da difusao. Quando o cache de disco
-nao comporta o modelo todo, o kernel descarta sempre o trecho mais antigo, que e o
-primeiro do passo seguinte, e o modelo volta inteiro do disco: a GPU fica esperando.
-O servico tem um teto de memoria (WORKER_MEMORY_MAX, o MemoryMax do systemd) que conta
-tambem o cache dele. ANIMACAO_RAM_FIXA_GB=N copia os primeiros N GB do transformer para
-a memoria do processo, que nao e descartada nem vai para o swap: so o resto e relido.
-Essa parte fixa sai da RAM do resto da maquina enquanto um video e gerado.
+fica mapeado do disco e e lido INTEIRO a cada passo da difusao. O que nao cabe no cache
+de disco e relido do disco a cada passo, e a GPU fica esperando. O servico tem um teto
+de memoria (WORKER_MEMORY_MAX, o MemoryMax do systemd) que conta tambem o cache dele.
+O que falta de cache e aproximadamente: transformer + memoria propria do servico - teto.
+So duas coisas diminuem essa falta: subir o teto (tirando RAM do resto da maquina) ou
+usar o transformer em fp8 (~{TRANSFORMER_GB / 2:.0f} GB, com uma pequena perda de qualidade).
+Fixar parte do modelo na RAM (ANIMACAO_RAM_FIXA_GB) NAO ajuda: a parte fixa sai do mesmo
+teto que o cache.
 
 Abaixo esta uma afericao feita DURANTE uma geracao de video, com uma sugestao calculada
 a partir do que estava rodando NAQUELE momento.
@@ -459,9 +464,10 @@ Antes de recomendar qualquer valor, CONVERSE comigo. Pergunte, uma coisa de cada
    eu usar ao mesmo tempo;
 3. se o computador fica sozinho gerando a noite (ai da para comprometer mais).
 
-So depois, me de: os valores de WORKER_MEMORY_MAX e ANIMACAO_RAM_FIXA_GB para o meu uso
-normal, quanto eu ganharia de tempo por passo (use o gargalo e o uso da GPU medidos; se
-a GPU ja passa de 85% na media, diga que mais RAM quase nao ajuda), o risco (memoria
+So depois, me de: o valor de WORKER_MEMORY_MAX para o meu uso normal, se vale a pena
+partir para o transformer em fp8, quanto eu ganharia de tempo por passo (use o gargalo
+e o uso da GPU medidos; se a GPU ja passa de 85% na media, diga que mais RAM quase nao
+ajuda), o risco (memoria
 apertada demais faz o kernel matar o servico, ou leva a VM e o desktop para o swap) e
 os comandos para aplicar (editar o .env e rodar ./deploy/instalar.sh entre animacoes).
 Se a medicao nao tiver animacao em curso, diga que ela nao serve e peca outra.
