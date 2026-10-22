@@ -1,13 +1,32 @@
 #!/usr/bin/env bash
 # O que o worker esta fazendo agora, numa tela so — feito para SSH.
 #
-#   ./deploy/situacao.sh          uma vez
-#   watch -n 10 ./deploy/situacao.sh    atualizando a cada 10 s (Ctrl+C sai)
+#   ./deploy/situacao.sh              uma vez
+#   ./deploy/situacao.sh -f           ao vivo, a cada 2 s (Ctrl+C sai)
+#   ./deploy/situacao.sh -f 1         ao vivo, a cada 1 s
+#
+# Ao vivo nao pesa: cada volta e uma consulta ao /health/ (estado em memoria),
+# um nvidia-smi, um ps e um journalctl — bem menos de um segundo, e nada
+# disso disputa a placa.
 #
 # Responde "esta processando ou travou?": quem segura a placa e ha quanto
 # tempo, o progresso da animacao, se a GPU trabalha, e se o processo do
 # FramePack esta vivo e gastando CPU.
 set -uo pipefail
+
+if [[ "${1:-}" == "-f" ]]; then
+    intervalo="${2:-2}"
+    trap 'tput cnorm 2>/dev/null; echo; exit 0' INT TERM
+    tput civis 2>/dev/null
+    while true; do
+        # A tela inteira de uma vez, e so depois limpa e imprime: sem isso ela
+        # pisca a cada volta.
+        tela="$("$0" 2>&1)"
+        clear
+        printf '%s\n\n(atualiza a cada %ss; Ctrl+C sai)  %s\n' "$tela" "$intervalo" "$(date +%T)"
+        sleep "$intervalo"
+    done
+fi
 
 RAIZ="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 _do_env() { grep -E "^${1}=" "$RAIZ/.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"'"'"' \r'; }
