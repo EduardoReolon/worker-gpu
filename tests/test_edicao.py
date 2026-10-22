@@ -263,7 +263,7 @@ def test_com_referencia_usa_o_perfil_de_ip_adapter_e_sem_usa_o_principal(edicao_
     edicao_mod.editar_imagens("cuda", base=_base(), mascara=_mascara(), **comum)
 
     assert ("referencia", "base") in vistos
-    assert ("forca", 0.5) in vistos
+    assert ("forca", {"up": {"block_0": [0.0, 0.5, 0.0]}}) in vistos
     assert ("principal", "pintura") in vistos
     chamadas = [v[1] for v in vistos if v[0] == "chamada"]
     assert "ip_adapter_image" in chamadas[0] and "mask_image" not in chamadas[0]
@@ -328,3 +328,27 @@ def test_pedir_outro_perfil_descarrega_o_atual(worker, monkeypatch):
 
     assert montados == ["principal", "referencia"]
     assert imagem._pipeline.perfil.nome == "referencia"
+
+
+# ---------------------------------------------------------------------------
+# InstantStyle: a referencia so na aparencia
+# ---------------------------------------------------------------------------
+def test_por_padrao_a_referencia_so_entra_na_camada_de_aparencia(edicao_mod):
+    """`up.block_0` e a aparencia; `down.block_2`, a composicao, fica de fora:
+    a cena segue o prompt em vez de copiar a pose da referencia."""
+    assert edicao_mod.escala_da_referencia(0.6) == {"up": {"block_0": [0.0, 0.6, 0.0]}}
+
+
+def test_com_todas_a_referencia_entra_no_modelo_inteiro(edicao_mod, monkeypatch):
+    monkeypatch.setattr(edicao_mod, "IMAGEM_REFERENCIA_CAMADAS", "todas")
+
+    assert edicao_mod.escala_da_referencia(0.6) == 0.6
+
+
+def test_valor_invalido_recusa_subir(worker, monkeypatch):
+    import imagem
+
+    monkeypatch.setattr(imagem, "IMAGEM_REFERENCIA_CAMADAS", "metade")
+
+    with pytest.raises(RuntimeError, match="aparencia ou todas"):
+        imagem.conferir_configuracao()

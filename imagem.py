@@ -61,6 +61,7 @@ from config import (
     IMAGEM_PERMITIR_CPU,
     IMAGEM_QUANTIZAR,
     IMAGEM_QUANTIZAR_COMPONENTES,
+    IMAGEM_REFERENCIA_CAMADAS,
     IMAGEM_REFERENCIA_DTYPE,
     IMAGEM_REFERENCIA_GUIDANCE,
     IMAGEM_REFERENCIA_MODELO,
@@ -309,6 +310,10 @@ def conferir_configuracao() -> None:
     """
     if IMAGEM_DTYPE not in ("float16", "bfloat16"):
         raise RuntimeError(f"IMAGEM_DTYPE={IMAGEM_DTYPE!r}. Use float16 ou bfloat16.")
+    if IMAGEM_REFERENCIA_CAMADAS not in ("aparencia", "todas"):
+        raise RuntimeError(
+            f"IMAGEM_REFERENCIA_CAMADAS={IMAGEM_REFERENCIA_CAMADAS!r}. Use aparencia ou todas."
+        )
     if IMAGEM_QUANTIZAR not in ("nao", "4bit", "8bit"):
         raise RuntimeError(f"IMAGEM_QUANTIZAR={IMAGEM_QUANTIZAR!r}. Use nao, 4bit ou 8bit.")
     if 0 < IMAGEM_TEMPO_TRAVADO <= IMAGEM_TEMPO_MAXIMO:
@@ -914,6 +919,8 @@ def estado() -> dict:
         "referencia": {
             "modelo": IMAGEM_REFERENCIA_MODELO or None,
             "maximo": IMAGEM_REFERENCIAS_MAXIMAS,
+            # `aparencia` (InstantStyle: so a camada de estilo) ou `todas`.
+            "camadas": IMAGEM_REFERENCIA_CAMADAS,
             "ip_adapter": (
                 "/".join((IMAGEM_IP_ADAPTER, IMAGEM_IP_ADAPTER_SUBPASTA, IMAGEM_IP_ADAPTER_PESO))
                 if IMAGEM_REFERENCIA_MODELO

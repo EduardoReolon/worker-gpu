@@ -74,6 +74,7 @@
     "referencia": {
       "modelo": "SG161222/RealVisXL_V5.0",
       "maximo": 3,
+      "camadas": "aparencia",
       "ip_adapter": "h94/IP-Adapter/sdxl_models/ip-adapter-plus_sdxl_vit-h.safetensors",
       "passos": 30,
       "guidance": 6.0

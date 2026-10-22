@@ -44,6 +44,7 @@ import respostas
 from arbitro import ARBITRO, GpuOcupada
 from config import (
     IMAGEM_MAXIMO,
+    IMAGEM_REFERENCIA_CAMADAS,
     IMAGEM_REFERENCIAS_MAXIMAS,
     OLLAMA_DESCARREGAR_PARA_IMAGEM,
 )
@@ -82,6 +83,20 @@ def _abrir(arquivo: UploadFile, campo: str):
     except (UnidentifiedImageError, OSError) as exc:
         raise PedidoInvalido(f"{campo} nao e uma imagem legivel: {exc}") from exc
     return figura
+
+
+def escala_da_referencia(forca: float):
+    """A forca da referencia, por camada (InstantStyle) ou em todas.
+
+    No SDXL, o IP-Adapter injeta a COMPOSICAO em `down.block_2` e a APARENCIA
+    (estilo: cor, textura, roupa) em `up.block_0`. Com `aparencia`, a
+    referencia so entra na segunda: o personagem chega com a cara dele, e a
+    cena fica com a pose e o enquadramento que o prompt descreve, em vez de
+    copiar os da foto de origem.
+    """
+    if IMAGEM_REFERENCIA_CAMADAS == "aparencia":
+        return {"up": {"block_0": [0.0, forca, 0.0]}}
+    return forca
 
 
 def mascara_para_o_diffusers(mascara):
@@ -151,7 +166,7 @@ def editar_imagens(
         argumentos["mask_image"] = pintar
 
     if referencias:
-        pipe.set_ip_adapter_scale(forca)
+        pipe.set_ip_adapter_scale(escala_da_referencia(forca))
         # A lista de fora e uma por IP-Adapter (aqui, um); a de dentro, as
         # imagens dele — os personagens da cena.
         argumentos["ip_adapter_image"] = [referencias]

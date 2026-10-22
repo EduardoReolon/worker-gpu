@@ -644,6 +644,12 @@ janela sai exatamente como foi mandada.
   padrão RealVisXL V5) com **IP-Adapter Plus**. O Z-Image não aceita
   IP-Adapter: ele só existe para o SDXL e família.
 
+**A referência entra só na aparência** (InstantStyle,
+`imagem.referencia.camadas: "aparencia"`): o personagem chega com a cor, a
+roupa e o jeito dele, mas a pose e o enquadramento seguem o `prompt`, em vez de
+copiar os da foto de referência. O rosto pode sair menos parecido que com a
+referência em todas as camadas (`todas`, configuração da máquina).
+
 Só um fica carregado por vez (placa de 8 GB): **alternar entre cenas com e sem
 personagem custa uma recarga** (1 a 2 minutos). Se puder, agrupe as cenas com
 personagem. `imagem.carregado_perfil` diz qual está carregado agora.

@@ -282,6 +282,16 @@ IMAGEM_IP_ADAPTER_CODIFICADOR = os.environ.get(
 ).strip()
 IMAGEM_REFERENCIAS_MAXIMAS = _inteiro("IMAGEM_REFERENCIAS_MAXIMAS", 3)
 
+# Em quais camadas do modelo a referencia entra (InstantStyle):
+#
+# - `aparencia`: so na camada de estilo (`up.block_0` do SDXL) — cor, textura,
+#   roupa, o jeito do personagem. A composicao fica com o prompt: a
+#   referencia nao arrasta a pose e o enquadramento da foto de origem para a
+#   cena. Aposta: o rosto pode sair menos parecido.
+# - `todas`: em todas as camadas, como antes — mais parecido, mas a cena tende
+#   a copiar a composicao da referencia.
+IMAGEM_REFERENCIA_CAMADAS = os.environ.get("IMAGEM_REFERENCIA_CAMADAS", "aparencia").strip().lower()
+
 
 # ---------------------------------------------------------------------------
 # Conversao de PDF (Docling)
