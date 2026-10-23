@@ -136,6 +136,34 @@ curl -s -H "Authorization: Bearer $(grep ^WORKER_SHARED_SECRET .env | cut -d= -f
 
 No publi-bot, a voz da narração da conta: `qwen:eduardo-vendas`.
 
+## Entonação gravada, timbre de outra voz (conversão)
+
+Outro uso da mesma voz: você grava a fala da cena **com a entonação certa**, e
+o worker troca só o **timbre** (`/v1/audio/convert`). As palavras, o ritmo e as
+pausas ficam os seus.
+
+- **Na voz da Carla:** converta para `qwen:carla`.
+- **Na sua própria voz, com qualidade de estúdio:** converta para a sua voz
+  boa (`qwen:eduardo`). A fala pode ser gravada às pressas, no celular ou no
+  navegador: o áudio que sai é recriado a partir da referência, e não é a
+  gravação limpa.
+
+Para isso funcionar bem:
+
+- **A referência é que precisa de qualidade** (a `referencia.wav` da voz
+  alvo). Grave-a uma vez, com cuidado, seguindo este guia. O conversor usa
+  os primeiros 10 s dela.
+- **A fala da cena pode ser simples, mas não ruim demais.** Microfone do
+  celular serve; ruído forte, eco grande, outra voz por cima ou som estourado
+  fazem o conversor errar palavras.
+- **Na conversão, o tom vem da fala da cena, não da referência.** Então a
+  referência da sua voz pode ser mais neutra que a de `eduardo-vendas`.
+
+**Ainda não testado na sua máquina:** o conversor atual (o do Chatterbox)
+segura bem as palavras e o ritmo. A subida e a descida da voz ele recria em
+parte. Se a entonação se perder, há um conversor que segue o tom da gravação à
+risca (o Seed-VC), que pode entrar como alternativa.
+
 ## Se não ficou bom
 
 | Sintoma | Provável causa | O que fazer |
