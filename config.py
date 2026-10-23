@@ -534,6 +534,25 @@ VOZ_QWEN_DISPOSITIVO = os.environ.get("VOZ_QWEN_DISPOSITIVO", "cuda").strip().lo
 # do Kokoro. O cliente precisa esperar pelo menos isto.
 VOZ_QWEN_TEMPO_MAXIMO = _inteiro("VOZ_QWEN_TEMPO_MAXIMO", 300)
 
+# Conversao de voz (`POST /v1/audio/convert`): a gravacao de uma pessoa sai no
+# timbre de uma voz do worker (a `referencia.wav` dela), com a entonacao, o
+# ritmo e as pausas de quem gravou. Pelo conversor do Chatterbox (MIT), num
+# ambiente proprio (`voz/conversao/`), instalado pelo deploy/instalar_voz.sh com
+# VOZ_CONVERSAO=sim. Na placa e pelo arbitro, como o Qwen. O Chatterbox poe uma
+# marca d'agua inaudivel em todo audio que sai dele.
+VOZ_CONVERSAO = _booleano("VOZ_CONVERSAO", False)
+VOZ_CONVERSAO_DIR = os.path.expanduser(
+    os.environ.get("VOZ_CONVERSAO_DIR", os.path.join(VOZ_DIR, "conversao"))
+)
+VOZ_CONVERSAO_PYTHON = os.path.expanduser(
+    os.environ.get("VOZ_CONVERSAO_PYTHON", os.path.join(VOZ_CONVERSAO_DIR, "venv", "bin", "python"))
+)
+VOZ_CONVERSAO_DISPOSITIVO = os.environ.get("VOZ_CONVERSAO_DISPOSITIVO", "cuda").strip().lower()
+VOZ_CONVERSAO_TEMPO_MAXIMO = _inteiro("VOZ_CONVERSAO_TEMPO_MAXIMO", 300)
+# Uma fala de cena tem segundos; acima disto e engano (ou um video inteiro).
+VOZ_CONVERSAO_SEGUNDOS_MAXIMOS = _inteiro("VOZ_CONVERSAO_SEGUNDOS_MAXIMOS", 120)
+VOZ_CONVERSAO_MAXIMO_BYTES = _inteiro("VOZ_CONVERSAO_MAXIMO_BYTES", 25 * 1024 * 1024)
+
 
 # ---------------------------------------------------------------------------
 # Arbitragem
@@ -560,4 +579,5 @@ DURACAO_ESTIMADA = {
     "animacao": _inteiro("ESTIMATIVA_ANIMACAO", 1500),
     # A voz do Qwen: carregar o modelo e falar uma lamina.
     "voz": _inteiro("ESTIMATIVA_VOZ", 45),
+    "conversao_de_voz": _inteiro("ESTIMATIVA_CONVERSAO_DE_VOZ", 30),
 }

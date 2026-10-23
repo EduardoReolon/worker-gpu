@@ -4,6 +4,7 @@
 #
 #   ./deploy/instalar_voz.sh           o Kokoro
 #   ./deploy/instalar_voz.sh --qwen    o Kokoro e o Qwen3-TTS (ou VOZ_QWEN=sim no .env)
+#   ./deploy/instalar_voz.sh --conversao   e a conversao de voz (ou VOZ_CONVERSAO=sim)
 #
 # O `instalar.sh` chama este sozinho quando o `.env` tem VOZ_ATIVA=sim.
 # Idempotente. Ambiente a parte pelo mesmo motivo da animacao: o worker so
@@ -63,40 +64,70 @@ echo "Ouca o teste: $DESTINO/teste.mp3"
 # testar tomaria a placa por fora do arbitro, com o worker possivelmente
 # animando. O teste e criar a primeira voz (./deploy/criar_voz.sh), que passa
 # pelo worker e espera a vez.
+_ligado() { [[ "${1,,}" =~ ^(1|true|sim|yes|on)$ ]]; }
 QWEN_LIGADO="${VOZ_QWEN:-nao}"
-[[ "${1:-}" == "--qwen" ]] && QWEN_LIGADO=sim
-case "${QWEN_LIGADO,,}" in
-    1|true|sim|yes|on) ;;
-    *) exit 0 ;;
-esac
+CONVERSAO_LIGADA="${VOZ_CONVERSAO:-nao}"
+for argumento in "$@"; do
+    [[ "$argumento" == "--qwen" ]] && QWEN_LIGADO=sim
+    [[ "$argumento" == "--conversao" ]] && CONVERSAO_LIGADA=sim
+done
 
-QWEN_DIR="${VOZ_QWEN_DIR:-$DESTINO/qwen}"
-QWEN_DIR="${QWEN_DIR/#\~/$HOME}"
-echo
-echo "==> Qwen3-TTS em $QWEN_DIR"
-if ! command -v sox >/dev/null; then
-    echo "  instalando o sox (o qwen-tts le e corta audio com ele)"
-    sudo apt-get install -y -q sox libsox-fmt-all
-fi
-mkdir -p "$QWEN_DIR" "${VOZ_VOZES_DIR:-$DESTINO/vozes}"
-if [[ ! -x "$QWEN_DIR/venv/bin/python" ]]; then
-    uv venv --python 3.12 "$QWEN_DIR/venv"
-fi
-QPY="$QWEN_DIR/venv/bin/python"
-uv pip install --python "$QPY" -q torch torchaudio
-uv pip install --python "$QPY" -q "qwen-tts>=0.1.1" soundfile
+if _ligado "$QWEN_LIGADO"; then
+    QWEN_DIR="${VOZ_QWEN_DIR:-$DESTINO/qwen}"
+    QWEN_DIR="${QWEN_DIR/#\~/$HOME}"
+    echo
+    echo "==> Qwen3-TTS em $QWEN_DIR"
+    if ! command -v sox >/dev/null; then
+        echo "  instalando o sox (o qwen-tts le e corta audio com ele)"
+        sudo apt-get install -y -q sox libsox-fmt-all
+    fi
+    mkdir -p "$QWEN_DIR" "${VOZ_VOZES_DIR:-$DESTINO/vozes}"
+    if [[ ! -x "$QWEN_DIR/venv/bin/python" ]]; then
+        uv venv --python 3.12 "$QWEN_DIR/venv"
+    fi
+    QPY="$QWEN_DIR/venv/bin/python"
+    uv pip install --python "$QPY" -q torch torchaudio
+    uv pip install --python "$QPY" -q "qwen-tts>=0.1.1" soundfile
 
-MODELO="${VOZ_QWEN_MODELO:-Qwen/Qwen3-TTS-12Hz-1.7B-Base}"
-DESENHO="${VOZ_QWEN_MODELO_DESENHO:-Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign}"
-echo "==> Baixando $MODELO e $DESENHO (~9 GB na primeira vez; so disco, sem a placa)"
-"$QPY" - "$MODELO" "$DESENHO" <<'PY'
+    MODELO="${VOZ_QWEN_MODELO:-Qwen/Qwen3-TTS-12Hz-1.7B-Base}"
+    DESENHO="${VOZ_QWEN_MODELO_DESENHO:-Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign}"
+    echo "==> Baixando $MODELO e $DESENHO (~9 GB na primeira vez; so disco, sem a placa)"
+    "$QPY" - "$MODELO" "$DESENHO" <<'PY'
 import sys
 from huggingface_hub import snapshot_download
 for repo in sys.argv[1:]:
     print("  ", snapshot_download(repo))
 PY
-"$QPY" -c "import qwen_tts, torch; print('  qwen-tts ok; CUDA:', torch.cuda.is_available())"
+    "$QPY" -c "import qwen_tts, torch; print('  qwen-tts ok; CUDA:', torch.cuda.is_available())"
 
-echo
-echo "Pronto. No .env do worker: VOZ_QWEN=sim, e reinicie o worker."
-echo "Depois crie a primeira voz:  ./deploy/criar_voz.sh carla \"mulher brasileira de 30 anos, voz calorosa\""
+    echo
+    echo "Pronto. No .env do worker: VOZ_QWEN=sim, e reinicie o worker."
+    echo "Depois crie a primeira voz:  ./deploy/criar_voz.sh carla \"mulher brasileira de 30 anos, voz calorosa\""
+fi
+
+# ---------------------------------------------------------------------------
+# Conversao de voz (opcional): VOZ_CONVERSAO=sim, ou --conversao
+# ---------------------------------------------------------------------------
+# O conversor do Chatterbox (MIT): a gravacao de uma pessoa no timbre de uma
+# voz qwen:<nome>. Ambiente proprio: o chatterbox-tts prende torch 2.6 e um
+# transformers que nao sao os do Qwen. Baixa o modelo (~1 GB), sem a placa.
+if _ligado "$CONVERSAO_LIGADA"; then
+    CONV_DIR="${VOZ_CONVERSAO_DIR:-$DESTINO/conversao}"
+    CONV_DIR="${CONV_DIR/#\~/$HOME}"
+    echo
+    echo "==> Conversao de voz (Chatterbox) em $CONV_DIR"
+    mkdir -p "$CONV_DIR"
+    if [[ ! -x "$CONV_DIR/venv/bin/python" ]]; then
+        uv venv --python 3.12 "$CONV_DIR/venv"
+    fi
+    CPY="$CONV_DIR/venv/bin/python"
+    uv pip install --python "$CPY" -q "chatterbox-tts>=0.1.7" soundfile
+    "$CPY" - <<'PY'
+from huggingface_hub import hf_hub_download
+for arquivo in ("s3gen.safetensors", "conds.pt"):
+    print("  ", hf_hub_download(repo_id="ResembleAI/chatterbox", filename=arquivo))
+PY
+    "$CPY" -c "import chatterbox.vc, torch; print('  chatterbox ok; CUDA:', torch.cuda.is_available())"
+    echo
+    echo "Pronto. No .env do worker: VOZ_CONVERSAO=sim, e reinicie o worker."
+fi

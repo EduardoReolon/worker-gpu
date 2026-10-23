@@ -253,3 +253,79 @@ def test_instrucao_e_falas_vizinhas_sao_aceitas_e_ignoradas(cliente, cabecalhos)
     assert voz.estado()["campos"] == {
         "instructions": False, "previous_text": False, "next_text": False,
     }  # fmt: skip
+
+
+FALSO_CONVERSAO = """
+import argparse, pathlib, sys
+p = argparse.ArgumentParser()
+p.add_argument("--origem"); p.add_argument("--alvo"); p.add_argument("--saida")
+p.add_argument("--dispositivo"); p.add_argument("--segundos-maximos")
+a = p.parse_args()
+origem = open(a.origem, "rb").read()
+if origem == b"longo":
+    print("o audio tem 300 s; o maximo e 120 s", file=sys.stderr); sys.exit(2)
+alvo = pathlib.Path(a.alvo)
+open(a.saida, "wb").write(b"ID3 " + alvo.parent.name.encode() + b" " + origem)
+print("FORMATO mp3")
+"""
+
+
+@pytest.fixture
+def conversao(qwen, tmp_path, monkeypatch):
+    import voz
+
+    script = tmp_path / "falso_conversao.py"
+    script.write_text(FALSO_CONVERSAO)
+    monkeypatch.setattr(voz, "VOZ_CONVERSAO", True)
+    monkeypatch.setattr(voz, "SCRIPT_CONVERSAO", script)
+    monkeypatch.setattr(voz, "VOZ_CONVERSAO_PYTHON", sys.executable)
+    return qwen
+
+
+def _converter(cliente, cabecalhos, voz="qwen:carla", conteudo=b"minha fala"):
+    return cliente.post(
+        "/v1/audio/convert", headers=cabecalhos, data={"voice": voz},
+        files={"audio": ("fala.mp3", conteudo, "audio/mpeg")},
+    )  # fmt: skip
+
+
+def test_converte_a_gravacao_para_o_timbre_da_voz(conversao, cabecalhos):
+    conversao.post(
+        "/v1/audio/voices", headers=cabecalhos, data={"nome": "carla", "descricao": "calorosa"}
+    )
+    conversao.soltou.clear()
+    resposta = _converter(conversao, cabecalhos)
+    assert resposta.status_code == 200
+    assert resposta.headers["content-type"] == "audio/mpeg"
+    assert resposta.content == b"ID3 carla minha fala"
+    assert conversao.soltou == ["converter a voz"]  # tomou e esvaziou a placa
+
+    import voz
+
+    assert voz.estado()["conversao"]["ultima"]["voz"] == "qwen:carla"
+
+
+def test_erros_da_conversao(conversao, cabecalhos, monkeypatch):
+    import arbitro
+    import voz
+
+    assert _converter(conversao, cabecalhos).json()["error"]["code"] == "voz_desconhecida"
+    kokoro = _converter(conversao, cabecalhos, voz="pf_dora")
+    assert kokoro.status_code == 422
+    assert "referencia" in kokoro.json()["error"]["message"]
+
+    conversao.post(
+        "/v1/audio/voices", headers=cabecalhos, data={"nome": "carla", "descricao": "calorosa"}
+    )
+    longo = _converter(conversao, cabecalhos, conteudo=b"longo")
+    assert longo.status_code == 422
+    assert "maximo" in longo.json()["error"]["message"]
+    assert _converter(conversao, cabecalhos, conteudo=b"").status_code == 422
+
+    with arbitro.ARBITRO.usar("animacao"):
+        ocupada = _converter(conversao, cabecalhos)
+    assert ocupada.status_code == 503
+    assert ocupada.json()["error"]["code"] == "gpu_ocupada"
+
+    monkeypatch.setattr(voz, "VOZ_CONVERSAO", False)
+    assert _converter(conversao, cabecalhos).status_code == 404

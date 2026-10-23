@@ -71,6 +71,7 @@ from config import (
     TRANSCRICAO_ATIVA,
     VETORIZACAO_ATIVA,
     VOZ_ATIVA,
+    VOZ_CONVERSAO,
     YOUTUBE_ATIVA,
 )
 
@@ -81,7 +82,7 @@ logger = logging.getLogger("worker-gpu")
 # ai quem integra precisa olhar, e `INTEGRACAO.md` ganha uma secao.
 # Acrescentar campo nao quebra ninguem e nao sobe nada: todo cliente deve
 # ignorar o que nao conhece.
-CONTRATO_VERSAO = "2.15"
+CONTRATO_VERSAO = "2.16"
 
 app = FastAPI(title="worker-gpu", version=CONTRATO_VERSAO)
 
@@ -230,6 +231,7 @@ def health():
         "youtube": YOUTUBE_ATIVA,
         "animacao": ANIMACAO_ATIVA,
         "voz": VOZ_ATIVA,
+        "conversao_de_voz": VOZ_ATIVA and VOZ_CONVERSAO,
     }
     # Memoria DESTE processo, e nao do sistema. E o campo que faltava: nesta
     # maquina quem foi para o swap foi o worker, nao o Ollama, e a suspeita

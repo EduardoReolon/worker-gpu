@@ -1111,6 +1111,38 @@ VOZ_PADRAO=qwen:carla
 # VOZ_QWEN_DISPOSITIVO=cuda                       # cpu: não disputa a placa, muito mais lento
 ```
 
+### Conversão de voz (`/v1/audio/convert`)
+
+```http
+POST /v1/audio/convert
+Content-Type: multipart/form-data
+
+audio=<a gravação: mp3, wav, flac ou ogg>
+voice=qwen:carla
+```
+
+- **`200`**: o áudio convertido (`audio/mpeg`). As palavras, o ritmo, as
+  pausas e a entonação são os da gravação; o **timbre** passa a ser o da voz.
+- **`voice`**: uma voz `qwen:<nome>`, cuja `referencia.wav` é o alvo (o
+  conversor usa os primeiros 10 s). Vazio vira `VOZ_PADRAO`. O Kokoro não tem
+  gravação de referência: `422 voz_desconhecida`, como uma voz que não
+  existe.
+- **Na placa e pelo árbitro**: com outro trabalho rodando, `503 gpu_ocupada`
+  com `Retry-After`. Reagende, não desista. Carregar o modelo leva alguns
+  segundos a cada conversão.
+- Erros:
+  - `422 pedido_invalido`: áudio vazio, ilegível ou com mais de
+    `VOZ_CONVERSAO_SEGUNDOS_MAXIMOS` (120 s);
+  - `413 arquivo_grande`: acima de `VOZ_CONVERSAO_MAXIMO_BYTES` (25 MB);
+  - `404 conversao_desligada`: a rota não está ligada;
+  - `500 falha_na_voz`, `503 timeout`, como na voz.
+- **O modelo**: o conversor do Chatterbox (MIT), sem treino. Ele põe uma
+  marca d'água inaudível em todo áudio que sai dele.
+- **Instalação:** `./deploy/instalar_voz.sh --conversao` (ou
+  `VOZ_CONVERSAO=sim` no `.env`), que cria `voz/conversao/` e baixa o modelo
+  (~1 GB). Depois, `VOZ_CONVERSAO=sim` e reinicie.
+- `/health/` publica `rotas.conversao_de_voz` e, ligada, `voz.conversao`.
+
 ### Saúde
 
 `GET /health/`, sem credencial. Use para diagnóstico, não como teste de
@@ -1176,6 +1208,14 @@ pontos merecem olhada:
   cabeçalho — a única forma de 503 que saía daqui sem nada para decidir;
 - **`/health/` ganhou `ollama.carregados_detalhe`** e passou a nunca responder
   500. `ollama.carregados` continua sendo a lista de nomes, intocada;
+## O que mudou na 2.16
+
+- **rota nova, `/v1/audio/convert`**: a gravação de uma pessoa no timbre de
+  uma voz `qwen:<nome>`, com a entonação de quem gravou. Veja **Conversão de
+  voz**;
+- `/health/` ganhou `rotas.conversao_de_voz` e, com a rota ligada,
+  `voz.conversao`.
+
 ## O que mudou na 2.15
 
 - `/v1/audio/speech` aceita `instructions`, `previous_text` e `next_text` e os

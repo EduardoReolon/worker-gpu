@@ -42,6 +42,12 @@ import recursos
 import respostas
 from arbitro import ARBITRO, GpuOcupada
 from config import (
+    VOZ_CONVERSAO,
+    VOZ_CONVERSAO_DISPOSITIVO,
+    VOZ_CONVERSAO_MAXIMO_BYTES,
+    VOZ_CONVERSAO_PYTHON,
+    VOZ_CONVERSAO_SEGUNDOS_MAXIMOS,
+    VOZ_CONVERSAO_TEMPO_MAXIMO,
     VOZ_DIR,
     VOZ_PADRAO,
     VOZ_PYTHON,
@@ -65,6 +71,7 @@ router = APIRouter()
 
 SCRIPT = Path(__file__).resolve().parent / "falar_kokoro.py"
 SCRIPT_QWEN = Path(__file__).resolve().parent / "falar_qwen.py"
+SCRIPT_CONVERSAO = Path(__file__).resolve().parent / "converter_voz.py"
 # Vozes do Kokoro: idioma (a, b, e, f, h, i, j, p, z) + genero (f, m) + _nome.
 _VOZ_DO_KOKORO = re.compile(r"^[abefhijpz][fm]_[a-z]+$")
 # Nome de uma voz do Qwen: a pasta dela.
@@ -80,6 +87,7 @@ _KOKORO_PT = {
     "pm_santa": "masculina, portugues do Brasil",
 }
 _ultimo: dict = {}
+_ultima_conversao: dict = {}
 
 
 class PedidoDeFala(BaseModel):
@@ -119,8 +127,17 @@ def conferir_configuracao() -> None:
             f"VOZ_QWEN esta ligado, mas {VOZ_QWEN_PYTHON} nao existe (o ambiente do Qwen). "
             "Rode ./deploy/instalar_voz.sh, ou VOZ_QWEN=nao."
         )
-    if VOZ_QWEN_DISPOSITIVO not in ("cuda", "cpu"):
-        raise RuntimeError(f"VOZ_QWEN_DISPOSITIVO={VOZ_QWEN_DISPOSITIVO!r}: use cuda ou cpu.")
+    if VOZ_CONVERSAO and not Path(VOZ_CONVERSAO_PYTHON).exists():
+        raise RuntimeError(
+            f"VOZ_CONVERSAO esta ligado, mas {VOZ_CONVERSAO_PYTHON} nao existe (o ambiente da "
+            "conversao). Rode ./deploy/instalar_voz.sh, ou VOZ_CONVERSAO=nao."
+        )
+    for nome, valor in (
+        ("VOZ_QWEN_DISPOSITIVO", VOZ_QWEN_DISPOSITIVO),
+        ("VOZ_CONVERSAO_DISPOSITIVO", VOZ_CONVERSAO_DISPOSITIVO),
+    ):
+        if valor not in ("cuda", "cpu"):
+            raise RuntimeError(f"{nome}={valor!r}: use cuda ou cpu.")
     try:
         voz_escolhida("")
     except VozDesconhecida as exc:
@@ -185,13 +202,22 @@ def _rodar(comando: list[str], *, entrada: str = "", tempo: int) -> subprocess.C
     )
 
 
-def _na_placa(rotulo: str, modelo: str, comando: list[str], *, entrada: str = "", tempo: int):
-    """Roda o Qwen com a placa na mao (ou sem ela, na CPU). Devolve o processo,
-    ou a resposta de erro pronta (503 ocupada)."""
-    if VOZ_QWEN_DISPOSITIVO == "cpu":
+def _na_placa(
+    rotulo: str,
+    modelo: str,
+    comando: list[str],
+    *,
+    entrada: str = "",
+    tempo: int,
+    tarefa: str = "voz",
+    dispositivo: str | None = None,
+):
+    """Roda o processo com a placa na mao (ou sem ela, na CPU). Devolve o
+    processo, ou a resposta de erro pronta (503 ocupada)."""
+    if (dispositivo or VOZ_QWEN_DISPOSITIVO) == "cpu":
         return _rodar(comando, entrada=entrada, tempo=tempo)
     try:
-        with ARBITRO.usar("voz", modelo=modelo):
+        with ARBITRO.usar(tarefa, modelo=modelo):
             recursos.soltar_a_placa(rotulo)
             return _rodar(comando, entrada=entrada, tempo=tempo)
     except GpuOcupada as erro:
@@ -333,6 +359,88 @@ def criar_voz(
     return JSONResponse(_descricao_da_voz(nome), status_code=201)
 
 
+def referencia_para_converter(pedida: str) -> Path:
+    """A gravacao de referencia da voz alvo. Levanta `VozDesconhecida`.
+
+    So as vozes `qwen:<nome>` tem uma; nao precisa do Qwen ligado, so da pasta."""
+    pedida = (pedida or "").strip() or VOZ_PADRAO.strip()
+    motor, _, nome = pedida.rpartition(":")
+    motor, nome = motor.lower(), nome.lower()
+    if motor in ("", "kokoro") and _VOZ_DO_KOKORO.match(nome):
+        raise VozDesconhecida(
+            f"{pedida!r} e do Kokoro, que nao tem gravacao de referencia: converta para "
+            "uma qwen:<nome>."
+        )
+    if motor != "qwen":
+        raise VozDesconhecida(f"{pedida!r} nao e voz deste worker: use qwen:<nome>.")
+    referencia = _pasta_da_voz(nome) / "referencia.wav"
+    if not _NOME_DE_VOZ.match(nome) or not referencia.exists():
+        existentes = ", ".join(f"qwen:{v}" for v in vozes_do_qwen()) or "nenhuma"
+        raise VozDesconhecida(f"{pedida!r} nao existe. Vozes do Qwen aqui: {existentes}.")
+    return referencia
+
+
+@router.post("/v1/audio/convert", dependencies=[Depends(conferir)])
+def converter(audio: UploadFile, voice: str = Form("")):
+    """A gravacao no timbre de uma voz do worker, com a entonacao de quem gravou."""
+    if not VOZ_CONVERSAO:
+        return _erro(
+            "conversao_desligada", "a conversao de voz nao esta ligada (VOZ_CONVERSAO).", 404
+        )
+    try:
+        alvo = referencia_para_converter(voice)
+    except VozDesconhecida as exc:
+        return _erro("voz_desconhecida", str(exc))
+    conteudo = audio.file.read(VOZ_CONVERSAO_MAXIMO_BYTES + 1)
+    if not conteudo:
+        return _invalido("audio vazio.")
+    if len(conteudo) > VOZ_CONVERSAO_MAXIMO_BYTES:
+        return _erro(
+            "arquivo_grande", f"audio com mais de {VOZ_CONVERSAO_MAXIMO_BYTES} bytes.", 413
+        )
+    inicio = time.monotonic()
+    with tempfile.TemporaryDirectory() as pasta:
+        # A extensao ajuda o leitor de audio a reconhecer o formato.
+        sufixo = Path(audio.filename or "").suffix.lower()[:5] or ".mp3"
+        origem = Path(pasta) / f"origem{sufixo}"
+        origem.write_bytes(conteudo)
+        saida = Path(pasta) / "convertida"
+        comando = [
+            VOZ_CONVERSAO_PYTHON, str(SCRIPT_CONVERSAO),
+            "--origem", str(origem), "--alvo", str(alvo), "--saida", str(saida),
+            "--dispositivo", VOZ_CONVERSAO_DISPOSITIVO,
+            "--segundos-maximos", str(VOZ_CONVERSAO_SEGUNDOS_MAXIMOS),
+        ]  # fmt: skip
+        try:
+            processo = _na_placa(
+                "converter a voz", "chatterbox-vc", comando,
+                tempo=VOZ_CONVERSAO_TEMPO_MAXIMO, tarefa="conversao_de_voz",
+                dispositivo=VOZ_CONVERSAO_DISPOSITIVO,
+            )  # fmt: skip
+        except subprocess.TimeoutExpired:
+            return respostas.indisponivel(
+                "timeout", f"a conversao passou de {VOZ_CONVERSAO_TEMPO_MAXIMO}s.", retry_after=None
+            )
+        if isinstance(processo, JSONResponse):
+            return processo
+        if processo.returncode == 2:
+            return _invalido(processo.stderr.strip()[-400:])
+        if processo.returncode != 0 or not saida.exists():
+            logger.warning("conversao falhou (%s): %s", processo.returncode, processo.stderr[-500:])
+            return respostas.falha_do_worker(
+                "falha_na_voz",
+                f"a conversao saiu com {processo.returncode}: {processo.stderr.strip()[-400:]}",
+            )
+        formato = "wav" if "FORMATO wav" in processo.stdout else "mp3"
+        convertida = saida.read_bytes()
+    _ultima_conversao.update(
+        voz=f"qwen:{alvo.parent.name}",
+        segundos=round(time.monotonic() - inicio, 1),
+        bytes=len(conteudo),
+    )
+    return Response(convertida, media_type="audio/wav" if formato == "wav" else "audio/mpeg")
+
+
 def estado() -> dict:
     corpo = {
         # Da 2.11, quando so havia o Kokoro; `motores` diz o que esta ligado.
@@ -343,6 +451,13 @@ def estado() -> dict:
         "campos": dict(CAMPOS_USADOS),
         "ultimo": dict(_ultimo) or None,
     }
+    if VOZ_CONVERSAO:
+        corpo["conversao"] = {
+            "modelo": "chatterbox-vc",
+            "dispositivo": VOZ_CONVERSAO_DISPOSITIVO,
+            "segundos_maximos": VOZ_CONVERSAO_SEGUNDOS_MAXIMOS,
+            "ultima": dict(_ultima_conversao) or None,
+        }
     if VOZ_QWEN:
         corpo["qwen"] = {
             "modelo": VOZ_QWEN_MODELO,
