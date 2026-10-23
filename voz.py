@@ -160,7 +160,11 @@ def voz_escolhida(pedida: str) -> tuple[str, str]:
             raise VozDesconhecida(f"{pedida!r}: o Qwen nao esta ligado neste worker (VOZ_QWEN).")
         if not _NOME_DE_VOZ.match(nome) or not (_pasta_da_voz(nome) / "referencia.wav").exists():
             existentes = ", ".join(f"qwen:{v}" for v in vozes_do_qwen()) or "nenhuma"
-            raise VozDesconhecida(f"{pedida!r} nao existe. Vozes do Qwen aqui: {existentes}.")
+            raise VozDesconhecida(
+                f"{pedida!r} nao existe. Vozes do Qwen aqui: {existentes}. "
+                f"Crie no worker: ./deploy/criar_voz.sh {nome} --gravacao <arquivo> "
+                '"<o que se diz nele>" (ou uma descricao no lugar da gravacao).'
+            )
         return "qwen", nome
     raise VozDesconhecida(
         f"{pedida!r} nao e voz deste worker: use uma do Kokoro (pf_dora, pm_alex) ou qwen:<nome>."
