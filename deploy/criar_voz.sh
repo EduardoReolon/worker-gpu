@@ -64,7 +64,13 @@ echo "==> Criando qwen:$NOME (a primeira vez carrega o modelo: ~1 min)"
 RESPOSTA="$(mktemp)"
 CODIGO="$(_pedir "$RESPOSTA" "${CAMPOS[@]}" "$URL/v1/audio/voices" | tail -1)"
 if [[ "$CODIGO" != "201" ]]; then
-    echo "  falhou ($CODIGO): $(cat "$RESPOSTA")"
+    if [[ "$CODIGO" == "000" ]]; then
+        echo "  o worker nao respondeu em $URL (fora do ar, reiniciando, ou caiu no meio)."
+        echo "  Veja: systemctl --user status worker-gpu"
+        echo "        journalctl --user -u worker-gpu -n 50 --no-pager"
+    else
+        echo "  falhou ($CODIGO): $(cat "$RESPOSTA")"
+    fi
     exit 1
 fi
 jq . "$RESPOSTA"
