@@ -2,8 +2,8 @@
 # O que o worker esta fazendo agora, numa tela so — feito para SSH.
 #
 #   ./deploy/situacao.sh              uma vez
-#   ./deploy/situacao.sh -f           ao vivo, a cada 2 s (Ctrl+C sai)
-#   ./deploy/situacao.sh -f 1         ao vivo, a cada 1 s
+#   ./deploy/situacao.sh -f           ao vivo, a cada 1 s (Ctrl+C sai)
+#   ./deploy/situacao.sh -f 5         ao vivo, a cada 5 s
 #
 # Ao vivo nao pesa: cada volta e uma consulta ao /health/ (estado em memoria),
 # um nvidia-smi, um ps e um journalctl — bem menos de um segundo, e nada
@@ -15,7 +15,7 @@
 set -uo pipefail
 
 if [[ "${1:-}" == "-f" ]]; then
-    intervalo="${2:-2}"
+    intervalo="${2:-1}"
     trap 'tput cnorm 2>/dev/null; echo; exit 0' INT TERM
     tput civis 2>/dev/null
     while true; do
