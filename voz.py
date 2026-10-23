@@ -88,6 +88,20 @@ class PedidoDeFala(BaseModel):
     voice: str = ""
     response_format: str = "mp3"
     speed: float | None = None
+    # Aceitos e IGNORADOS (o `/health/` diz isso em `voz.campos`). O clone do
+    # Qwen (modelo Base) nao tem controle por instrucao: so o VoiceDesign e o
+    # CustomVoice tem, e nenhum dos dois mantem uma voz clonada. O tom vem da
+    # gravacao de referencia (GRAVAR_VOZ.md). As falas vizinhas pediriam gerar
+    # tres falas e recortar uma sem marcas de tempo: o triplo do tempo de placa
+    # por um corte incerto.
+    instructions: str = ""
+    previous_text: str = ""
+    next_text: str = ""
+
+
+# O que de cada pedido cada campo opcional muda. Publicado no `/health/` para o
+# cliente nao precisar adivinhar.
+CAMPOS_USADOS = {"instructions": False, "previous_text": False, "next_text": False}
 
 
 class VozDesconhecida(ValueError):
@@ -322,6 +336,7 @@ def estado() -> dict:
         "motores": {"kokoro": True, "qwen": VOZ_QWEN},
         "voz_dir": VOZ_DIR,
         "voz_padrao": VOZ_PADRAO,
+        "campos": dict(CAMPOS_USADOS),
         "ultimo": dict(_ultimo) or None,
     }
     if VOZ_QWEN:

@@ -1061,6 +1061,12 @@ Content-Type: application/json
   silêncio. Quem tem mais de um serviço de voz deve passar para o próximo.
 - **`model`** é informativo; a voz é que manda.
 - **`speed`** só vale no Kokoro.
+- **`instructions`** (OpenAI) e **`previous_text` / `next_text`** (ElevenLabs)
+  são aceitos e **ignorados** nos dois motores; `voz.campos` no `/health/` diz
+  isso. O clone do Qwen (modelo Base) não tem controle por instrução: o tom
+  vem da gravação de referência (`GRAVAR_VOZ.md`). As falas vizinhas pediriam
+  gerar três falas e recortar uma sem marcas de tempo: o triplo do tempo de
+  placa por um corte incerto.
 - **Uma voz do Qwen usa a placa.** Com outro trabalho rodando (uma animação
   leva ~25 min), ela leva `503 gpu_ocupada` com `Retry-After`, como a imagem.
   O cliente deve reagendar a fala, e não desistir.
@@ -1170,6 +1176,13 @@ pontos merecem olhada:
   cabeçalho — a única forma de 503 que saía daqui sem nada para decidir;
 - **`/health/` ganhou `ollama.carregados_detalhe`** e passou a nunca responder
   500. `ollama.carregados` continua sendo a lista de nomes, intocada;
+## O que mudou na 2.15
+
+- `/v1/audio/speech` aceita `instructions`, `previous_text` e `next_text` e os
+  ignora (antes também ignorava, sem dizer);
+- `/health/` ganhou `voz.campos`: o que cada um desses campos muda (hoje,
+  nada).
+
 ## O que mudou na 2.14
 
 - **voz pelo Qwen3-TTS** (`qwen:<nome>`), na placa e pelo árbitro: pode levar

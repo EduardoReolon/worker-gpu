@@ -1,5 +1,5 @@
 {
-  "_contrato_versao": "2.14",
+  "_contrato_versao": "2.15",
   "_rota": "POST /v1/images/edits (multipart: prompt, size, n, negative_prompt, seed, image, mask, reference_image (ate 3, repetivel), reference_strength)",
   "_nota": "O dialeto de edicao da OpenAI, com `reference_image` e `reference_strength` (0 a 1, padrao 0.6) a mais. Com `reference_image`, a cena sai com a aparencia dos personagens, pelo modelo de referencia (IP-Adapter, `imagem.referencia.modelo` no /health/); sem, pelo modelo principal. `image` + `mask`: pinta SO a parte transparente (alfa 0) da mascara e devolve a opaca IDENTICA a base, pixel a pixel. A mascara precisa de canal alfa e do tamanho da `image`; `image` sem `mask` volta 422. `model` e `response_format` sao aceitos e ignorados.",
   "_nota_avisos": "`avisos` so aparece quando algo pedido nao foi feito — hoje, `reference_image` com o modelo de referencia desligado neste worker (a cena sai so pela descricao). Mostre ao usuario.",

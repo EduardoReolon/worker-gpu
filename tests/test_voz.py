@@ -234,3 +234,22 @@ def test_a_lista_de_vozes_tem_a_forma_publicada(qwen, cabecalhos):
     assert set(resposta) == {k for k in exemplo if not k.startswith("_")}
     assert set(resposta["data"][0]) == set(exemplo["data"][0])
     assert set(resposta["data"][-1]) == set(exemplo["data"][-1])
+
+
+def test_instrucao_e_falas_vizinhas_sao_aceitas_e_ignoradas(cliente, cabecalhos):
+    """O PubliBot manda os campos da OpenAI e da ElevenLabs; o worker nao os
+    usa, nao quebra, e diz isso no /health/."""
+    import voz
+
+    resposta = cliente.post(
+        "/v1/audio/speech", headers=cabecalhos,
+        json={
+            "voice": "pf_dora", "input": "Oi", "instructions": "como quem conversa",
+            "previous_text": "antes", "next_text": "depois",
+        },
+    )  # fmt: skip
+    assert resposta.status_code == 200
+    assert resposta.content == b"ID3 pf_dora 1.0 Oi"
+    assert voz.estado()["campos"] == {
+        "instructions": False, "previous_text": False, "next_text": False,
+    }  # fmt: skip
