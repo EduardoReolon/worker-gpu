@@ -24,8 +24,12 @@ fi
 
 RAIZ="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 _do_env() { grep -E "^${1}=" "$RAIZ/.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"'"'"' \r'; }
-URL="http://127.0.0.1:$(_do_env BIND_PORT || true)"
-[[ "$URL" == "http://127.0.0.1:" ]] && URL="http://127.0.0.1:8090"
+# O endereco em que o worker escuta (o BIND_HOST pode ser so o do Tailscale);
+# 0.0.0.0 ou vazio escutam em todos, inclusive no 127.0.0.1.
+HOST="$(_do_env BIND_HOST || true)"
+[[ -z "$HOST" || "$HOST" == "0.0.0.0" ]] && HOST="127.0.0.1"
+PORTA="$(_do_env BIND_PORT || true)"
+URL="http://$HOST:${PORTA:-8090}"
 SEGREDO="$(_do_env WORKER_SHARED_SECRET || true)"
 [[ -z "$SEGREDO" ]] && { echo "WORKER_SHARED_SECRET nao esta no .env"; exit 1; }
 
