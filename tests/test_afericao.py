@@ -128,3 +128,18 @@ def test_sem_animacao_nao_sugere_e_diz_por_que(afericao):
 
     assert sugestao["ANIMACAO_RAM_FIXA_GB"] == 0
     assert "sem animacao" in sugestao["motivo"]
+
+
+def test_no_fp8_nao_falta_cache_e_mostra_a_folga(afericao):
+    """No fp8 o transformer ja esta na memoria propria: somar o bf16 por cima
+    (como fazia) dizia que faltavam ~23 GB, com o disco parado."""
+    medicao = _medicao(gpu=96, disco=1, disponivel=7.0, anon=15.6)
+    medicao["animacao_fim"]["model"] = "framepack-fp8"
+    medicao["modelos"] = {"framepack": "bf16", "framepack-fp8": "fp8"}
+
+    sugestao = afericao.sugerir(medicao, afericao.analisar(medicao))
+
+    assert sugestao["fp8"] is True
+    assert sugestao["falta_gb"] == 0
+    assert sugestao["folga_gb"] == pytest.approx(2.4)
+    assert "fp8" in sugestao["motivo"]

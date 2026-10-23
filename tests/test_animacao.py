@@ -264,13 +264,13 @@ def test_o_health_mostra_os_modelos_e_o_padrao(animacao_mod):
 def test_avisa_na_subida_se_o_teto_nao_comporta_o_fp8(animacao_mod, monkeypatch, caplog):
     import logging
 
-    monkeypatch.setenv("WORKER_MEMORY_MAX", "18G")
+    monkeypatch.setenv("WORKER_MEMORY_MAX", "16G")
     with caplog.at_level(logging.WARNING, logger="worker-gpu.animacao"):
         animacao_mod._avisar_do_teto_para_fp8()
-    assert "21G" in caplog.text
+    assert "18G" in caplog.text
 
     caplog.clear()
-    monkeypatch.setenv("WORKER_MEMORY_MAX", "22G")
+    monkeypatch.setenv("WORKER_MEMORY_MAX", "18G")
     with caplog.at_level(logging.WARNING, logger="worker-gpu.animacao"):
         animacao_mod._avisar_do_teto_para_fp8()
     assert caplog.text == ""

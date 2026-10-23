@@ -184,11 +184,13 @@ def _avisar_do_teto_para_fp8() -> None:
         gb = float(teto[:-1]) * {"G": 1, "M": 1 / 1024, "T": 1024}[teto[-1]]
     except (KeyError, ValueError, IndexError):
         return
-    if gb < 21:
+    # Medido: a memoria propria do servico chega a ~15,6 GB numa animacao fp8.
+    if gb < 18:
         logger.warning(
             "Ha modelo fp8 em ANIMACAO_MODELOS e WORKER_MEMORY_MAX=%s. O fp8 poe ~13 GB do "
-            "transformer na memoria do processo: com menos de 21G o kernel pode matar o servico "
-            "no meio da animacao. Suba o WORKER_MEMORY_MAX e rode ./deploy/instalar.sh.",
+            "transformer na memoria do processo (medido: ~15,6 GB no servico): com menos de 18G "
+            "o kernel pode matar o servico no meio da animacao. Suba o WORKER_MEMORY_MAX e rode "
+            "./deploy/instalar.sh.",
             teto,
         )
 

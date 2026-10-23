@@ -464,7 +464,8 @@ ANIMACAO_RAM_FIXA_GB = _decimal("ANIMACAO_RAM_FIXA_GB", 0.0)
 # camada a camada, na hora da conta. Com o modelo inteiro na memoria, o disco
 # sai do caminho — numa maquina de 32 GB com uma VM ao lado, o bf16 relia ~9,5
 # GB do disco por passo. Perde um pouco de detalhe fino. Os ~13 GB contam no
-# MemoryMax do servico: com fp8, WORKER_MEMORY_MAX=21G ou mais.
+# MemoryMax do servico: medido ~15,6 GB de memoria propria numa animacao fp8,
+# entao WORKER_MEMORY_MAX=18G ou mais.
 #
 # Um modelo maior no futuro entra aqui como mais uma entrada, desde que seja
 # da mesma arquitetura (HunyuanVideoTransformer3DModelPacked).

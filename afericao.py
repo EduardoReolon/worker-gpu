@@ -232,6 +232,8 @@ def coletar(minutos: float, intervalo: float, url: str) -> dict:
         "servico_fim": _memoria_do_servico(cg),
         "animacao_inicio": anim_inicio,
         "animacao_fim": _animacao_em_curso(fim_saude),
+        # {nome: precisao}, para saber se o modelo medido e o fp8.
+        "modelos": ((fim_saude or inicio_saude or {}).get("animacao") or {}).get("modelos") or {},
         "fora_do_worker": _processos_fora_do_worker(cg),
         "config": {
             chave: os.environ.get(chave, padrao)
@@ -327,14 +329,27 @@ def sugerir(medicao: dict, analise: dict) -> dict:
     # depende de fixar camadas (ANIMACAO_RAM_FIXA_GB): o que se fixa sai do
     # mesmo teto que o cache, e a conta e a mesma. So diminui subindo o teto
     # ou diminuindo o modelo (o transformer em fp8 tem ~13 GB).
-    falta_atual = max(0.0, TRANSFORMER_GB + base - teto_atual)
-    falta = max(0.0, TRANSFORMER_GB + base - teto)
-    falta_fp8 = max(0.0, TRANSFORMER_GB / 2 + base - teto_atual)
+    # No fp8 o transformer ja ESTA na memoria propria (convertido, ~13 GB): nao
+    # falta cache nenhum, e o que importa e a folga ate o teto.
+    animacao = medicao.get("animacao_fim") or medicao.get("animacao_inicio") or {}
+    fp8 = medicao.get("modelos", {}).get(animacao.get("model")) == "fp8"
+    if fp8:
+        falta_atual = falta = falta_fp8 = 0.0
+    else:
+        falta_atual = max(0.0, TRANSFORMER_GB + base - teto_atual)
+        falta = max(0.0, TRANSFORMER_GB + base - teto)
+        falta_fp8 = max(0.0, TRANSFORMER_GB / 2 + base - teto_atual)
+    folga = teto_atual - (servico_fim.get("anon_gb") or 0)
 
     if analise["gargalo"] == "sem_animacao":
         motivo = "sem animacao em curso nao da para saber o gargalo: afira durante uma."
     elif analise["gargalo"] == "gpu":
         motivo = "a GPU ja trabalha quase o tempo todo: mais RAM quase nao muda o tempo."
+        if fp8:
+            motivo += (
+                f" O modelo e o fp8, inteiro na memoria do servico: folga de {folga:.1f} GB ate o "
+                "teto" + (" — apertada, considere subir o teto." if folga < 1.5 else ".")
+            )
     elif falta == 0:
         motivo = "com este teto o transformer cabe inteiro no cache: o disco sai do caminho."
     else:
@@ -354,6 +369,8 @@ def sugerir(medicao: dict, analise: dict) -> dict:
         "falta_atual_gb": falta_atual,
         "falta_gb": falta,
         "falta_fp8_gb": falta_fp8,
+        "fp8": fp8,
+        "folga_gb": folga,
         "WORKER_MEMORY_MAX": f"{teto}G",
         # Fixar camadas nao reduz a falta (veja acima): fica desligado.
         "ANIMACAO_RAM_FIXA_GB": 0,
@@ -429,10 +446,16 @@ def relatorio(medicao: dict, analise: dict, sugestao: dict) -> str:
         f"- ANIMACAO_RAM_FIXA_GB={sugestao['ANIMACAO_RAM_FIXA_GB']}",
         f"- Por que: {sugestao['motivo']}",
         f"- Conta do teto: {sugestao['total_gb']:.0f} GB de RAM - {sugestao['fora_gb']:.1f} GB "
-        f"fora do worker - {RESERVA_GB:.0f} GB de reserva. Cache que falta para o transformer "
-        f"(~{TRANSFORMER_GB:.0f} GB + {sugestao['base_gb']:.1f} GB de memoria propria - teto): "
-        f"hoje ~{sugestao['falta_atual_gb']:.0f} GB, com o teto sugerido "
-        f"~{sugestao['falta_gb']:.0f} GB.",
+        f"fora do worker - {RESERVA_GB:.0f} GB de reserva. "
+        + (
+            f"Modelo fp8: o transformer ja esta na memoria propria; folga ate o teto "
+            f"{sugestao['folga_gb']:.1f} GB."
+            if sugestao["fp8"]
+            else f"Cache que falta para o transformer (~{TRANSFORMER_GB:.0f} GB + "
+            f"{sugestao['base_gb']:.1f} GB de memoria propria - teto): hoje "
+            f"~{sugestao['falta_atual_gb']:.0f} GB, com o teto sugerido "
+            f"~{sugestao['falta_gb']:.0f} GB."
+        ),
         "- Aplicar: editar o `.env` e rodar `./deploy/instalar.sh` ENTRE animacoes (o restart "
         "cancela a que estiver rodando).",
     ]
