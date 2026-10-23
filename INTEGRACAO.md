@@ -1087,8 +1087,9 @@ Content-Type: application/json
 ```
 
 O script vai pelo worker (`POST /v1/audio/voices`), espera a vez na placa e
-grava `voz/teste-<nome>.mp3` para você ouvir. Só clone a voz de quem
-autorizou.
+grava `voz/teste-<nome>.mp3` para você ouvir. Como gravar, com textos
+para cada estilo (vendas, calmo, urgente): `GRAVAR_VOZ.md`. Só clone a voz
+de quem autorizou.
 
 - **Instalação:** `./deploy/instalar_voz.sh`, ou o `instalar.sh` com
   `VOZ_ATIVA=sim` no `.env`. Ela cria `voz/`, com o venv do Kokoro e fora do

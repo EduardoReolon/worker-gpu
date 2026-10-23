@@ -7,9 +7,9 @@
 #   ./deploy/criar_voz.sh carla "..." --substituir      troca uma que ja existe
 #
 # Pela descricao, o modelo VoiceDesign inventa a voz (nao imita ninguem). Pela
-# gravacao, clona a sua: grave de 5 a 15 s, sem musica nem eco, e passe o texto
-# exato do que disse (sem ele funciona, mas imita menos). So clone a voz de
-# quem autorizou.
+# gravacao, clona a sua: de 10 a 15 s, sem eco, com o texto exato do que disse.
+# O tom da gravacao vira o tom da voz. Como gravar: GRAVAR_VOZ.md.
+# So clone a voz de quem autorizou.
 #
 # Vai pelo worker, e nao direto no modelo: criar e falar usam a placa e passam
 # pelo arbitro. Com uma animacao rodando, o script espera a vez.
