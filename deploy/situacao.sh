@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # O que o worker esta fazendo agora, numa tela so — feito para SSH.
 #
-#   ./deploy/situacao.sh              uma vez
-#   ./deploy/situacao.sh -f           ao vivo, a cada 1 s (Ctrl+C sai)
-#   ./deploy/situacao.sh -f 5         ao vivo, a cada 5 s
+#   ./deploy/situacao.sh              ao vivo, a cada 1 s (Ctrl+C sai)
+#   ./deploy/situacao.sh 5            ao vivo, a cada 5 s (-f 5 tambem vale)
+#   ./deploy/situacao.sh -1           uma vez so (para copiar ou colar num log)
 #
 # Ao vivo nao pesa: cada volta e uma consulta ao /health/ (estado em memoria),
 # um nvidia-smi, um ps e um journalctl — bem menos de um segundo, e nada
@@ -14,14 +14,16 @@
 # FramePack esta vivo e gastando CPU.
 set -uo pipefail
 
-if [[ "${1:-}" == "-f" ]]; then
-    intervalo="${2:-1}"
+[[ "${1:-}" == "-f" ]] && shift
+if [[ "${1:-}" != "-1" ]]; then
+    intervalo="${1:-1}"
+    [[ "$intervalo" =~ ^[0-9]+([.][0-9]+)?$ ]] || { echo "uso: $0 [segundos | -1]"; exit 2; }
     trap 'tput cnorm 2>/dev/null; echo; exit 0' INT TERM
     tput civis 2>/dev/null
     while true; do
         # A tela inteira de uma vez, e so depois limpa e imprime: sem isso ela
         # pisca a cada volta.
-        tela="$("$0" 2>&1)"
+        tela="$("$0" -1 2>&1)"
         clear
         printf '%s\n\n(atualiza a cada %ss; Ctrl+C sai)  %s\n' "$tela" "$intervalo" "$(date +%T)"
         sleep "$intervalo"
