@@ -155,3 +155,17 @@ def devolver_memoria(rotulo: str) -> None:
     depois = _rss_mb()
     if antes is not None and depois is not None:
         logger.info("%s descarregado: RSS de %.0f MB para %.0f MB.", rotulo, antes, depois)
+
+
+def soltar_a_placa(para: str) -> None:
+    """Com o lock na mao: nada do worker nem do Ollama fica na VRAM. Para quem
+    roda um processo a parte que precisa da placa inteira (a animacao, a voz
+    do Qwen). `para` so aparece no aviso de quem nao descarregou."""
+    import importlib
+
+    for nome in ("ollama", "imagem", "transcricao", "vetorizacao"):
+        try:
+            modulo = importlib.import_module(nome)
+            (modulo.descarregar_tudo if nome == "ollama" else modulo.descarregar)()
+        except Exception as exc:  # um modulo que nao descarrega nao impede tentar
+            logger.warning("Nao descarreguei %s antes de %s: %s", nome, para, exc)

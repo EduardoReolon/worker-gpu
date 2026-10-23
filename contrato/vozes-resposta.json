@@ -1,0 +1,14 @@
+{
+  "_contrato_versao": "2.14",
+  "_rota": "GET /v1/audio/voices (com credencial)",
+  "_nota": "As vozes que este worker fala, para o campo `voice` do POST /v1/audio/speech. `motor` diz quem fala: `kokoro` (CPU, nunca espera a placa) ou `qwen` (na placa, passa pelo arbitro: com outro trabalho rodando leva 503 gpu_ocupada com Retry-After, como a imagem). `padrao` e a voz de um pedido com `voice` vazio ou com um nome da OpenAI (alloy, nova...).",
+  "_nota_nomes": "Uma voz do Kokoro e `pf_dora` (ou `kokoro:pf_dora`); uma do Qwen e SEMPRE `qwen:<nome>`. O prefixo `motor:` existe para nao confundir com o id de outro servico. Qualquer outra voz (id da ElevenLabs, `pt-BR-...` do Google, qwen:<nome> que nao existe) leva 422 `voz_desconhecida`: o cliente com varios servicos passa para o proximo.",
+  "_nota_criar": "POST /v1/audio/voices, multipart: `nome` (a-z, 0-9, - e _, ate 40) e `descricao` (o modelo VoiceDesign inventa a voz, na placa) OU `gravacao` (5 a 15 s de fala; com `texto`, o que se diz nela, imita melhor). `substituir=true` troca uma existente. 201 com um item como os de `data`; 409 `voz_existente`; 422 `pedido_invalido`; 404 `voz_desligada` sem o Qwen; 503 gpu_ocupada.",
+  "_nota_transcrita": "So nas do Qwen: sem a transcricao da referencia, o clone usa so a impressao da voz e imita menos.",
+  "object": "list",
+  "padrao": "qwen:carla",
+  "data": [
+    {"id": "pf_dora", "motor": "kokoro", "descricao": "feminina, portugues do Brasil"},
+    {"id": "qwen:carla", "motor": "qwen", "descricao": "mulher brasileira de 30 anos, voz calorosa", "transcrita": true}
+  ]
+}

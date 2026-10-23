@@ -1036,37 +1036,72 @@ passo, e não o modelo inteiro.
 3. O processo carrega os modelos a cada trabalho (alguns minutos a mais) e
    devolve toda a memória ao terminar.
 
-### Voz (texto para fala, Kokoro)
+### Voz (texto para fala: Kokoro e Qwen3-TTS)
 
 ```http
 POST /v1/audio/speech
 Content-Type: application/json
 
-{"model": "kokoro", "voice": "pf_dora", "input": "Você acorda cansado?", "response_format": "mp3"}
+{"model": "qwen", "voice": "qwen:carla", "input": "Você acorda cansado?", "response_format": "mp3"}
 ```
 
 - **`200`**: o áudio (`audio/mpeg`, ou `audio/wav` se o libsndfile da máquina
   não gravar MP3).
-- **`voice`**: uma voz do Kokoro. Em português do Brasil:
-  - `pf_dora` (feminina);
-  - `pm_alex` e `pm_santa` (masculinas).
-- Uma voz da OpenAI (`alloy`, `nova`) ou vazio vira `VOZ_PADRAO`.
+- **`voice` diz o motor**, e o nome nunca se confunde com o de outro serviço:
+
+  | Voz | Motor | Onde roda |
+  |---|---|---|
+  | `pf_dora`, `pm_alex`, `pm_santa` (ou `kokoro:pf_dora`) | Kokoro | CPU, nunca espera a placa; soa sintético |
+  | `qwen:<nome>` | Qwen3-TTS | placa, pelo árbitro; bem mais natural |
+  | vazio, ou da OpenAI (`alloy`, `nova`...) | `VOZ_PADRAO` | o motor dela |
+
+- **Qualquer outra voz leva `422 voz_desconhecida`**: o id de 20 letras da
+  ElevenLabs, o `pt-BR-...` do Google, ou um `qwen:<nome>` que não existe (a
+  mensagem lista as que existem). Antes da 2.14, elas viravam a voz padrão em
+  silêncio. Quem tem mais de um serviço de voz deve passar para o próximo.
+- **`model`** é informativo; a voz é que manda.
+- **`speed`** só vale no Kokoro.
+- **Uma voz do Qwen usa a placa.** Com outro trabalho rodando (uma animação
+  leva ~25 min), ela leva `503 gpu_ocupada` com `Retry-After`, como a imagem.
+  O cliente deve reagendar a fala, e não desistir.
+- **Cada fala do Qwen carrega o modelo** (~10 a 20 s) antes de falar: espere a
+  resposta por pelo menos `VOZ_QWEN_TEMPO_MAXIMO` (300 s de padrão), e não pelos
+  120 s do Kokoro.
 - Erros:
-  - `422` para texto vazio ou longo demais;
-  - `500 falha_na_voz` se o Kokoro não rodar;
-  - `503 timeout` se passar de `VOZ_TEMPO_MAXIMO`.
-- **Não usa a placa** e não passa pelo árbitro: o Kokoro (82M) roda na CPU,
-  mais rápido que tempo real. Narrar não espera a imagem nem a animação, e não
-  tira o modelo de texto da VRAM.
+  - `422 pedido_invalido` para texto vazio ou longo demais;
+  - `422 voz_desconhecida`, como acima;
+  - `500 falha_na_voz` se o motor não rodar;
+  - `503 gpu_ocupada` (só o Qwen);
+  - `503 timeout` se passar do tempo máximo do motor.
+
+**As vozes:** `GET /v1/audio/voices` lista as que este worker fala
+(`contrato/vozes-resposta.json`). Uma voz do Qwen é uma pasta em
+`VOZ_VOZES_DIR` com `referencia.wav` (alguns segundos de fala) e
+`referencia.txt` (o que se diz nela). Para criar:
+
+```bash
+# Inventada a partir de uma descrição (o modelo VoiceDesign; não imita ninguém):
+./deploy/criar_voz.sh carla "mulher brasileira de 30 anos, voz calorosa e calma"
+# Clonada de uma gravação de 5 a 15 s, com o texto exato do que se diz nela:
+./deploy/criar_voz.sh eduardo --gravacao minha_voz.wav "o que eu falo na gravação"
+```
+
+O script vai pelo worker (`POST /v1/audio/voices`), espera a vez na placa e
+grava `voz/teste-<nome>.mp3` para você ouvir. Só clone a voz de quem
+autorizou.
+
 - **Instalação:** `./deploy/instalar_voz.sh`, ou o `instalar.sh` com
-  `VOZ_ATIVA=sim` no `.env`. Ela cria `voz/`, com o venv dele e fora do git, e
-  instala o `espeak-ng`, que é a pronúncia do português. No fim, grava
-  `voz/teste.mp3`, para você ouvir antes de ligar.
+  `VOZ_ATIVA=sim` no `.env`. Ela cria `voz/`, com o venv do Kokoro e fora do
+  git, e instala o `espeak-ng`, que é a pronúncia do português. No fim, grava
+  `voz/teste.mp3`. Com `VOZ_QWEN=sim` (ou `--qwen`), ela também cria
+  `voz/qwen/`, com o venv do Qwen, e baixa os dois modelos (~9 GB, só disco).
 
 ```bash
 VOZ_ATIVA=sim
-# VOZ_PADRAO=pf_dora
-# VOZ_VELOCIDADE=1.0
+VOZ_QWEN=sim
+VOZ_PADRAO=qwen:carla
+# VOZ_QWEN_MODELO=Qwen/Qwen3-TTS-12Hz-1.7B-Base   # ou o 0.6B: menos VRAM, imita menos
+# VOZ_QWEN_DISPOSITIVO=cuda                       # cpu: não disputa a placa, muito mais lento
 ```
 
 ### Saúde
@@ -1134,6 +1169,17 @@ pontos merecem olhada:
   cabeçalho — a única forma de 503 que saía daqui sem nada para decidir;
 - **`/health/` ganhou `ollama.carregados_detalhe`** e passou a nunca responder
   500. `ollama.carregados` continua sendo a lista de nomes, intocada;
+## O que mudou na 2.14
+
+- **voz pelo Qwen3-TTS** (`qwen:<nome>`), na placa e pelo árbitro: pode levar
+  `503 gpu_ocupada`, e cada fala leva de segundos a um minuto. Veja **Voz**;
+- **uma voz que não é do worker leva `422 voz_desconhecida`**, em vez de virar
+  a padrão. Vazio e os nomes da OpenAI continuam virando a padrão;
+- rotas novas: `GET /v1/audio/voices` (`contrato/vozes-resposta.json`) e
+  `POST /v1/audio/voices` (criar uma voz);
+- `/health/` ganhou `voz.motores` e, com o Qwen ligado, `voz.qwen` (modelo,
+  dispositivo, idioma, vozes) e `motor` em `voz.ultimo`.
+
 ## O que mudou na 2.13
 
 - **`/v1/videos` passa a ler o `model`**: `framepack` (bf16) ou

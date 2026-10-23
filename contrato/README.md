@@ -10,6 +10,7 @@ contrato que so vive na cabeca de quem escreveu diverge no primeiro mes.
     ocupada-resposta.json    qualquer rota, quando a GPU esta em uso
     saude-resposta.json      GET  /health/
     video-resposta.json      POST /v1/videos e GET /v1/videos/{id} (animacao)
+    vozes-resposta.json      GET  /v1/audio/voices (as vozes de /v1/audio/speech)
 
 Os codigos de `error.code` vivem no `ocupada-resposta.json`, com uma nota
 por codigo dizendo se o cliente deve adiar ou desistir.

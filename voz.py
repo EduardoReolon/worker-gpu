@@ -1,16 +1,28 @@
-"""Rota de voz: `POST /v1/audio/speech`, no dialeto da OpenAI, pelo Kokoro.
+"""Rota de voz: `POST /v1/audio/speech`, no dialeto da OpenAI.
 
 O PubliBot narra as laminas dos videos das redes por aqui (uma fala por
 lamina), sem pagar API. O mesmo cliente fala com a OpenAI (`gpt-4o-mini-tts`)
 trocando o endereco.
 
-- **Nao usa a placa.** O Kokoro (82M) roda na CPU mais rapido que tempo real,
-  entao nao passa pelo arbitro: narrar nao espera uma imagem acabar, e nao
-  tira o modelo de texto da VRAM.
-- **Processo a parte**, como a animacao: o Kokoro mora no ambiente dele
-  (`VOZ_DIR`, instalado pelo `deploy/instalar_voz.sh`).
-- **A voz**: a do pedido, se for do Kokoro (`pf_dora`, `pm_alex`...); uma da
-  OpenAI (`alloy`, `nova`) ou vazia vira `VOZ_PADRAO`.
+Dois motores, escolhidos pelo NOME da voz:
+
+- **Kokoro** (`pf_dora`, `pm_alex`; ou `kokoro:pf_dora`): 82M, na CPU, mais
+  rapido que tempo real. Nao passa pelo arbitro: narrar nao espera uma imagem
+  acabar, e nao tira o modelo de texto da VRAM. Soa sintetico.
+- **Qwen3-TTS** (`qwen:<nome>`): bem mais natural, clonado de uma referencia
+  de poucos segundos (`VOZ_VOZES_DIR/<nome>/`). Na placa, passa pelo arbitro:
+  com uma animacao rodando, leva `503 gpu_ocupada` e o cliente volta depois.
+
+O prefixo `motor:` existe para o nome nunca se confundir com o de outro
+servico (o id de 20 letras da ElevenLabs, o `pt-BR-...` do Google). Uma voz que
+nao e de nenhum dos dois motores leva `422 voz_desconhecida`, e nao a voz
+padrao: quem tem mais de um servico de voz passa para o proximo, em vez de
+narrar com a voz errada sem saber. Os nomes da OpenAI (`alloy`, `nova`) e o
+vazio continuam virando `VOZ_PADRAO`.
+
+Os dois motores moram em ambientes proprios (`voz/venv` e `voz/qwen/venv`,
+instalados pelo `deploy/instalar_voz.sh`) e rodam como processo a parte, como
+a animacao.
 """
 
 from __future__ import annotations
@@ -22,18 +34,28 @@ import tempfile
 import time
 from pathlib import Path
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Form, UploadFile
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
+import recursos
 import respostas
+from arbitro import ARBITRO, GpuOcupada
 from config import (
     VOZ_DIR,
     VOZ_PADRAO,
     VOZ_PYTHON,
+    VOZ_QWEN,
+    VOZ_QWEN_DISPOSITIVO,
+    VOZ_QWEN_IDIOMA,
+    VOZ_QWEN_MODELO,
+    VOZ_QWEN_MODELO_DESENHO,
+    VOZ_QWEN_PYTHON,
+    VOZ_QWEN_TEMPO_MAXIMO,
     VOZ_TEMPO_MAXIMO,
     VOZ_TEXTO_MAXIMO,
     VOZ_VELOCIDADE,
+    VOZ_VOZES_DIR,
 )
 from seguranca import conferir
 
@@ -42,8 +64,21 @@ logger = logging.getLogger("worker-gpu.voz")
 router = APIRouter()
 
 SCRIPT = Path(__file__).resolve().parent / "falar_kokoro.py"
+SCRIPT_QWEN = Path(__file__).resolve().parent / "falar_qwen.py"
 # Vozes do Kokoro: idioma (a, b, e, f, h, i, j, p, z) + genero (f, m) + _nome.
 _VOZ_DO_KOKORO = re.compile(r"^[abefhijpz][fm]_[a-z]+$")
+# Nome de uma voz do Qwen: a pasta dela.
+_NOME_DE_VOZ = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
+# As da OpenAI viram a padrao: o PubliBot manda "alloy" quando a conta nao tem voz.
+_VOZES_DA_OPENAI = {
+    "alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer",
+    "verse",
+}  # fmt: skip
+_KOKORO_PT = {
+    "pf_dora": "feminina, portugues do Brasil",
+    "pm_alex": "masculina, portugues do Brasil",
+    "pm_santa": "masculina, portugues do Brasil",
+}
 _ultimo: dict = {}
 
 
@@ -55,68 +90,245 @@ class PedidoDeFala(BaseModel):
     speed: float | None = None
 
 
+class VozDesconhecida(ValueError):
+    pass
+
+
 def conferir_configuracao() -> None:
     if not Path(VOZ_PYTHON).exists():
         raise RuntimeError(
             f"VOZ_ATIVA esta ligado, mas {VOZ_PYTHON} nao existe (o ambiente do Kokoro). "
             "Rode ./deploy/instalar_voz.sh, ou VOZ_ATIVA=nao."
         )
+    if VOZ_QWEN and not Path(VOZ_QWEN_PYTHON).exists():
+        raise RuntimeError(
+            f"VOZ_QWEN esta ligado, mas {VOZ_QWEN_PYTHON} nao existe (o ambiente do Qwen). "
+            "Rode ./deploy/instalar_voz.sh, ou VOZ_QWEN=nao."
+        )
+    if VOZ_QWEN_DISPOSITIVO not in ("cuda", "cpu"):
+        raise RuntimeError(f"VOZ_QWEN_DISPOSITIVO={VOZ_QWEN_DISPOSITIVO!r}: use cuda ou cpu.")
+    try:
+        voz_escolhida("")
+    except VozDesconhecida as exc:
+        # Nao impede subir: a voz pode ser criada depois, e as outras funcionam.
+        logger.warning("VOZ_PADRAO=%s nao fala ainda: %s", VOZ_PADRAO, exc)
 
 
-def voz_escolhida(pedida: str) -> str:
-    pedida = (pedida or "").strip().lower()
-    return pedida if _VOZ_DO_KOKORO.match(pedida) else VOZ_PADRAO
+def _pasta_da_voz(nome: str) -> Path:
+    return Path(VOZ_VOZES_DIR) / nome
+
+
+def vozes_do_qwen() -> list[str]:
+    pasta = Path(VOZ_VOZES_DIR)
+    if not pasta.is_dir():
+        return []
+    return sorted(
+        p.name
+        for p in pasta.iterdir()
+        if _NOME_DE_VOZ.match(p.name) and (p / "referencia.wav").exists()
+    )
+
+
+def voz_escolhida(pedida: str) -> tuple[str, str]:
+    """(motor, voz) do pedido. Levanta `VozDesconhecida` para o que nao e
+    destes motores."""
+    pedida = (pedida or "").strip()
+    if not pedida or pedida.lower() in _VOZES_DA_OPENAI:
+        if VOZ_PADRAO.strip().lower() in _VOZES_DA_OPENAI:
+            raise VozDesconhecida(f"VOZ_PADRAO={VOZ_PADRAO!r} nao e voz do worker.")
+        pedida = VOZ_PADRAO.strip()
+    motor, _, nome = pedida.rpartition(":")
+    motor, nome = motor.lower(), nome.lower()
+    if motor in ("", "kokoro") and _VOZ_DO_KOKORO.match(nome):
+        return "kokoro", nome
+    if motor == "qwen":
+        if not VOZ_QWEN:
+            raise VozDesconhecida(f"{pedida!r}: o Qwen nao esta ligado neste worker (VOZ_QWEN).")
+        if not _NOME_DE_VOZ.match(nome) or not (_pasta_da_voz(nome) / "referencia.wav").exists():
+            existentes = ", ".join(f"qwen:{v}" for v in vozes_do_qwen()) or "nenhuma"
+            raise VozDesconhecida(f"{pedida!r} nao existe. Vozes do Qwen aqui: {existentes}.")
+        return "qwen", nome
+    raise VozDesconhecida(
+        f"{pedida!r} nao e voz deste worker: use uma do Kokoro (pf_dora, pm_alex) ou qwen:<nome>."
+    )
+
+
+def _erro(codigo: str, mensagem: str, status: int = 422) -> JSONResponse:
+    return JSONResponse({"error": {"code": codigo, "message": mensagem}}, status_code=status)
 
 
 def _invalido(mensagem: str) -> JSONResponse:
-    return JSONResponse(
-        {"error": {"code": "pedido_invalido", "message": mensagem}}, status_code=422
+    return _erro("pedido_invalido", mensagem)
+
+
+def _rodar(comando: list[str], *, entrada: str = "", tempo: int) -> subprocess.CompletedProcess:
+    return subprocess.run(  # noqa: S603 - comando montado aqui, sem shell
+        comando, input=entrada, capture_output=True, text=True, timeout=tempo
     )
+
+
+def _na_placa(rotulo: str, modelo: str, comando: list[str], *, entrada: str = "", tempo: int):
+    """Roda o Qwen com a placa na mao (ou sem ela, na CPU). Devolve o processo,
+    ou a resposta de erro pronta (503 ocupada)."""
+    if VOZ_QWEN_DISPOSITIVO == "cpu":
+        return _rodar(comando, entrada=entrada, tempo=tempo)
+    try:
+        with ARBITRO.usar("voz", modelo=modelo):
+            recursos.soltar_a_placa(rotulo)
+            return _rodar(comando, entrada=entrada, tempo=tempo)
+    except GpuOcupada as erro:
+        return respostas.ocupada(erro)
+
+
+def _comando_qwen(modo: str, nome: str, modelo: str) -> list[str]:
+    return [
+        VOZ_QWEN_PYTHON, str(SCRIPT_QWEN), modo,
+        "--voz-dir", str(_pasta_da_voz(nome)),
+        "--modelo", modelo,
+        "--dispositivo", VOZ_QWEN_DISPOSITIVO,
+        "--idioma", VOZ_QWEN_IDIOMA,
+    ]  # fmt: skip
 
 
 @router.post("/v1/audio/speech", dependencies=[Depends(conferir)])
 def falar(pedido: PedidoDeFala):
-    """`def` e nao `async def`: a sintese bloqueia alguns segundos."""
+    """`def` e nao `async def`: a sintese bloqueia de segundos a um minuto."""
     texto = pedido.input.strip()
     if not texto:
         return _invalido("input vazio.")
     if len(texto) > VOZ_TEXTO_MAXIMO:
         return _invalido(f"input com mais de {VOZ_TEXTO_MAXIMO} caracteres.")
-    voz = voz_escolhida(pedido.voice)
+    try:
+        motor, voz = voz_escolhida(pedido.voice)
+    except VozDesconhecida as exc:
+        return _erro("voz_desconhecida", str(exc))
     inicio = time.monotonic()
     with tempfile.TemporaryDirectory() as pasta:
         saida = Path(pasta) / "fala"
+        if motor == "kokoro":
+            tempo = VOZ_TEMPO_MAXIMO
+            comando = [
+                VOZ_PYTHON, str(SCRIPT), "--voz", voz, "--saida", str(saida),
+                "--velocidade", str(pedido.speed or VOZ_VELOCIDADE),
+            ]  # fmt: skip
+        else:
+            tempo = VOZ_QWEN_TEMPO_MAXIMO
+            comando = [*_comando_qwen("falar", voz, VOZ_QWEN_MODELO), "--saida", str(saida)]
         try:
-            processo = subprocess.run(  # noqa: S603 - comando montado aqui, sem shell
-                [
-                    VOZ_PYTHON, str(SCRIPT), "--voz", voz, "--saida", str(saida),
-                    "--velocidade", str(pedido.speed or VOZ_VELOCIDADE),
-                ],
-                input=texto,
-                capture_output=True,
-                text=True,
-                timeout=VOZ_TEMPO_MAXIMO,
-            )  # fmt: skip
+            if motor == "kokoro":
+                processo = _rodar(comando, entrada=texto, tempo=tempo)
+            else:
+                processo = _na_placa("falar", VOZ_QWEN_MODELO, comando, entrada=texto, tempo=tempo)
         except subprocess.TimeoutExpired:
-            return respostas.indisponivel(
-                "timeout", f"a voz passou de {VOZ_TEMPO_MAXIMO}s.", retry_after=None
-            )
+            return respostas.indisponivel("timeout", f"a voz passou de {tempo}s.", retry_after=None)
+        if isinstance(processo, JSONResponse):
+            return processo
         if processo.returncode != 0 or not saida.exists():
-            logger.warning("Kokoro falhou (%s): %s", processo.returncode, processo.stderr[-500:])
+            logger.warning("%s falhou (%s): %s", motor, processo.returncode, processo.stderr[-500:])
             return respostas.falha_do_worker(
                 "falha_na_voz",
-                f"o Kokoro saiu com {processo.returncode}: {processo.stderr.strip()[-400:]}",
+                f"o {motor} saiu com {processo.returncode}: {processo.stderr.strip()[-400:]}",
             )
         formato = "wav" if "FORMATO wav" in processo.stdout else "mp3"
         conteudo = saida.read_bytes()
-    _ultimo.update(voz=voz, segundos=round(time.monotonic() - inicio, 1), caracteres=len(texto))
+    _ultimo.update(
+        motor=motor,
+        voz=voz if motor == "kokoro" else f"qwen:{voz}",
+        segundos=round(time.monotonic() - inicio, 1),
+        caracteres=len(texto),
+    )
     return Response(conteudo, media_type="audio/wav" if formato == "wav" else "audio/mpeg")
 
 
-def estado() -> dict:
+def _descricao_da_voz(nome: str) -> dict:
+    pasta = _pasta_da_voz(nome)
+    descricao = pasta / "descricao.txt"
     return {
+        "id": f"qwen:{nome}",
+        "motor": "qwen",
+        "descricao": descricao.read_text(encoding="utf-8").strip() if descricao.exists() else None,
+        # Sem a transcricao, o clone usa so a impressao da voz e imita menos.
+        "transcrita": (pasta / "referencia.txt").exists(),
+    }
+
+
+@router.get("/v1/audio/voices", dependencies=[Depends(conferir)])
+def listar_vozes():
+    vozes = [{"id": v, "motor": "kokoro", "descricao": d} for v, d in _KOKORO_PT.items()]
+    if VOZ_QWEN:
+        vozes += [_descricao_da_voz(v) for v in vozes_do_qwen()]
+    return {"object": "list", "padrao": VOZ_PADRAO, "data": vozes}
+
+
+@router.post("/v1/audio/voices", dependencies=[Depends(conferir)])
+def criar_voz(
+    nome: str = Form(...),
+    descricao: str = Form(""),
+    texto: str = Form(""),
+    substituir: bool = Form(False),
+    gravacao: UploadFile | None = None,
+):
+    """Cria uma voz do Qwen: de uma DESCRICAO (o modelo VoiceDesign inventa a
+    voz e grava a referencia) ou de uma GRAVACAO (de 5 a 15 s de fala, com o
+    `texto` do que se diz nela, de preferencia)."""
+    if not VOZ_QWEN:
+        return _erro("voz_desligada", "o Qwen nao esta ligado neste worker (VOZ_QWEN).", 404)
+    nome = nome.strip().lower()
+    if not _NOME_DE_VOZ.match(nome):
+        return _invalido("nome: letras minusculas, numeros, - e _, ate 40.")
+    if bool(descricao.strip()) == (gravacao is not None):
+        return _invalido("mande descricao OU gravacao.")
+    if (_pasta_da_voz(nome) / "referencia.wav").exists() and not substituir:
+        return _erro("voz_existente", f"qwen:{nome} ja existe (substituir=true troca).", 409)
+    try:
+        if gravacao is not None:
+            with tempfile.TemporaryDirectory() as pasta:
+                arquivo = Path(pasta) / "gravacao"
+                arquivo.write_bytes(gravacao.file.read())
+                comando = [
+                    *_comando_qwen("importar", nome, VOZ_QWEN_MODELO),
+                    "--gravacao", str(arquivo), "--texto", texto,
+                ]  # fmt: skip
+                processo = _rodar(comando, tempo=VOZ_QWEN_TEMPO_MAXIMO)
+        else:
+            comando = [
+                *_comando_qwen("desenhar", nome, VOZ_QWEN_MODELO_DESENHO),
+                "--descricao", descricao.strip(),
+            ]  # fmt: skip
+            processo = _na_placa(
+                "criar a voz", VOZ_QWEN_MODELO_DESENHO, comando, tempo=VOZ_QWEN_TEMPO_MAXIMO
+            )
+    except subprocess.TimeoutExpired:
+        return respostas.indisponivel(
+            "timeout", f"criar a voz passou de {VOZ_QWEN_TEMPO_MAXIMO}s.", retry_after=None
+        )
+    if isinstance(processo, JSONResponse):
+        return processo
+    if processo.returncode == 2:
+        return _invalido(processo.stderr.strip()[-400:])
+    if processo.returncode != 0:
+        logger.warning("criar voz falhou (%s): %s", processo.returncode, processo.stderr[-500:])
+        return respostas.falha_do_worker(
+            "falha_na_voz",
+            f"o qwen saiu com {processo.returncode}: {processo.stderr.strip()[-400:]}",
+        )
+    return JSONResponse(_descricao_da_voz(nome), status_code=201)
+
+
+def estado() -> dict:
+    corpo = {
+        # Da 2.11, quando so havia o Kokoro; `motores` diz o que esta ligado.
         "motor": "kokoro",
+        "motores": {"kokoro": True, "qwen": VOZ_QWEN},
         "voz_dir": VOZ_DIR,
         "voz_padrao": VOZ_PADRAO,
         "ultimo": dict(_ultimo) or None,
     }
+    if VOZ_QWEN:
+        corpo["qwen"] = {
+            "modelo": VOZ_QWEN_MODELO,
+            "dispositivo": VOZ_QWEN_DISPOSITIVO,
+            "idioma": VOZ_QWEN_IDIOMA,
+            "vozes": [f"qwen:{v}" for v in vozes_do_qwen()],
+        }
+    return corpo

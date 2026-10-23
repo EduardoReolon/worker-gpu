@@ -50,7 +50,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, Form, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 
-import ollama
+import recursos
 import respostas
 from arbitro import ARBITRO, GpuOcupada
 from config import (
@@ -195,18 +195,6 @@ def _avisar_do_teto_para_fp8() -> None:
         )
 
 
-def _soltar_a_placa() -> None:
-    """Com o lock na mao: nada do worker nem do Ollama fica na VRAM."""
-    import importlib
-
-    ollama.descarregar_tudo()
-    for nome in ("imagem", "transcricao", "vetorizacao"):
-        try:
-            importlib.import_module(nome).descarregar()
-        except Exception as exc:  # um modulo que nao descarrega nao impede tentar
-            logger.warning("Nao descarreguei %s antes de animar: %s", nome, exc)
-
-
 def _comando(trabalho: Trabalho, imagem: Path) -> list[str]:
     comando = [
         ANIMACAO_PYTHON, str(SCRIPT),
@@ -236,7 +224,7 @@ def _gerar(trabalho: Trabalho, imagem: Path, posse) -> None:
     saida_do_processo: list[str] = []
     try:
         trabalho.status = "in_progress"
-        _soltar_a_placa()
+        recursos.soltar_a_placa("animar")
         processo = subprocess.Popen(  # noqa: S603 - comando montado aqui, sem shell
             _comando(trabalho, imagem),
             stdout=subprocess.PIPE,

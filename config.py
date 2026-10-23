@@ -486,7 +486,7 @@ ANIMACAO_GUARDAR_SEGUNDOS = _inteiro("ANIMACAO_GUARDAR_SEGUNDOS", 6 * 3600)
 
 
 # ---------------------------------------------------------------------------
-# Voz (texto para fala, pelo Kokoro)
+# Voz (texto para fala: Kokoro na CPU, Qwen3-TTS na placa)
 # ---------------------------------------------------------------------------
 # Desligada de padrao. O Kokoro (82M, Apache-2.0) roda na CPU, mais rapido que
 # tempo real: nao toma a placa nem passa pelo arbitro. Mora num ambiente proprio
@@ -498,12 +498,41 @@ VOZ_DIR = os.path.expanduser(
 VOZ_PYTHON = os.path.expanduser(
     os.environ.get("VOZ_PYTHON", os.path.join(VOZ_DIR, "venv", "bin", "python"))
 )
-# A voz quando o pedido nao traz uma do Kokoro (ou traz uma da OpenAI, "alloy").
-# Portugues do Brasil: pf_dora (feminina), pm_alex e pm_santa (masculinas).
+# A voz quando o pedido vem vazio (ou com uma da OpenAI, "alloy"). Do Kokoro, em
+# portugues do Brasil: pf_dora (feminina), pm_alex e pm_santa (masculinas). Ou
+# uma do Qwen: qwen:<nome da pasta em VOZ_VOZES_DIR>.
 VOZ_PADRAO = os.environ.get("VOZ_PADRAO", "pf_dora")
 VOZ_VELOCIDADE = _decimal("VOZ_VELOCIDADE", 1.0)
 VOZ_TEMPO_MAXIMO = _inteiro("VOZ_TEMPO_MAXIMO", 120)
 VOZ_TEXTO_MAXIMO = _inteiro("VOZ_TEXTO_MAXIMO", 4000)
+
+# O Qwen3-TTS (Apache-2.0): voz bem mais natural que a do Kokoro, clonada de
+# uma referencia de poucos segundos. Desligado de padrao; ambiente proprio
+# (`voz/qwen/`), instalado pelo deploy/instalar_voz.sh com VOZ_QWEN=sim.
+#
+# As vozes sao pastas em VOZ_VOZES_DIR (`referencia.wav` + `referencia.txt`),
+# pedidas como `qwen:<pasta>`. Crie com ./deploy/criar_voz.sh.
+#
+# Na placa, PASSA PELO ARBITRO (o modelo de 1,7B pede uns 5 GB de VRAM): espera
+# a imagem e a animacao acabarem, e leva 503 gpu_ocupada enquanto isso. Com
+# VOZ_QWEN_DISPOSITIVO=cpu nao disputa a placa, mas fica muitas vezes mais lento.
+VOZ_QWEN = _booleano("VOZ_QWEN", False)
+VOZ_QWEN_DIR = os.path.expanduser(os.environ.get("VOZ_QWEN_DIR", os.path.join(VOZ_DIR, "qwen")))
+VOZ_QWEN_PYTHON = os.path.expanduser(
+    os.environ.get("VOZ_QWEN_PYTHON", os.path.join(VOZ_QWEN_DIR, "venv", "bin", "python"))
+)
+VOZ_VOZES_DIR = os.path.expanduser(os.environ.get("VOZ_VOZES_DIR", os.path.join(VOZ_DIR, "vozes")))
+# O 0.6B ("Qwen/Qwen3-TTS-12Hz-0.6B-Base") cabe em menos VRAM e imita menos.
+VOZ_QWEN_MODELO = os.environ.get("VOZ_QWEN_MODELO", "Qwen/Qwen3-TTS-12Hz-1.7B-Base")
+# So para CRIAR uma voz a partir de uma descricao (./deploy/criar_voz.sh).
+VOZ_QWEN_MODELO_DESENHO = os.environ.get(
+    "VOZ_QWEN_MODELO_DESENHO", "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign"
+)
+VOZ_QWEN_IDIOMA = os.environ.get("VOZ_QWEN_IDIOMA", "Portuguese")
+VOZ_QWEN_DISPOSITIVO = os.environ.get("VOZ_QWEN_DISPOSITIVO", "cuda").strip().lower()
+# Cada fala carrega o modelo (~10 a 20 s) antes de falar: o teto e maior que o
+# do Kokoro. O cliente precisa esperar pelo menos isto.
+VOZ_QWEN_TEMPO_MAXIMO = _inteiro("VOZ_QWEN_TEMPO_MAXIMO", 300)
 
 
 # ---------------------------------------------------------------------------
@@ -529,4 +558,6 @@ DURACAO_ESTIMADA = {
     "vetorizacao": _inteiro("ESTIMATIVA_VETORIZACAO", 15),
     # Uns 20 minutos por 2,4 s de video numa placa de 8 GB.
     "animacao": _inteiro("ESTIMATIVA_ANIMACAO", 1500),
+    # A voz do Qwen: carregar o modelo e falar uma lamina.
+    "voz": _inteiro("ESTIMATIVA_VOZ", 45),
 }
