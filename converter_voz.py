@@ -48,6 +48,18 @@ def main() -> int:
         )
         return 2
 
+    import perth
+
+    if perth.PerthImplicitWatermarker is None:
+        # O marcador d'agua do Chatterbox nao importou (falta o `pkg_resources`),
+        # e o modelo quebraria com um TypeError que nao diz nada.
+        print(
+            "o marcador d'agua do Chatterbox nao carregou (falta o pkg_resources). Rode: "
+            "./deploy/instalar_voz.sh --conversao",
+            file=sys.stderr,
+        )
+        return 1
+
     from chatterbox.vc import ChatterboxVC
 
     modelo = ChatterboxVC.from_pretrained(args.dispositivo)

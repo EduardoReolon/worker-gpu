@@ -121,13 +121,16 @@ if _ligado "$CONVERSAO_LIGADA"; then
         uv venv --python 3.12 "$CONV_DIR/venv"
     fi
     CPY="$CONV_DIR/venv/bin/python"
-    uv pip install --python "$CPY" -q "chatterbox-tts>=0.1.7" soundfile
+    # O `setuptools<81` e do marcador d'agua do Chatterbox (`resemble-perth`):
+    # ele importa o `pkg_resources`, que o venv do uv nao traz e que o
+    # setuptools 81 tirou. Sem ele o marcador vira None e o modelo nao carrega.
+    uv pip install --python "$CPY" -q "chatterbox-tts>=0.1.7" soundfile "setuptools<81"
     "$CPY" - <<'PY'
 from huggingface_hub import hf_hub_download
 for arquivo in ("s3gen.safetensors", "conds.pt"):
     print("  ", hf_hub_download(repo_id="ResembleAI/chatterbox", filename=arquivo))
 PY
-    "$CPY" -c "import chatterbox.vc, torch; print('  chatterbox ok; CUDA:', torch.cuda.is_available())"
+    "$CPY" -c "import perth, torch; assert perth.PerthImplicitWatermarker, 'perth sem pkg_resources'; import chatterbox.vc; print('  chatterbox ok; CUDA:', torch.cuda.is_available())"
     echo
     echo "Pronto. No .env do worker: VOZ_CONVERSAO=sim, e reinicie o worker."
 fi
