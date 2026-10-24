@@ -28,6 +28,9 @@ YouTube não usa a placa e fica de fora). Quem não pega recebe `503` com
 
 > Integrando um cliente? **[`INTEGRACAO.md`](INTEGRACAO.md)** tem o guia
 > completo. O resto deste arquivo é sobre operar a máquina.
+>
+> O guia prático dos scripts (instalar, atualizar, backup, vozes, medir):
+> **[`deploy/README.md`](deploy/README.md)**.
 
 ## Por que um processo, e não três serviços
 
