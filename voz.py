@@ -60,6 +60,7 @@ from config import (
     VOZ_QWEN_MODELO,
     VOZ_QWEN_MODELO_DESENHO,
     VOZ_QWEN_PYTHON,
+    VOZ_QWEN_SOTAQUE,
     VOZ_QWEN_TEMPO_MAXIMO,
     VOZ_TEMPO_MAXIMO,
     VOZ_TEXTO_MAXIMO,
@@ -387,7 +388,7 @@ def criar_voz(
         else:
             comando = [
                 *_comando_qwen("desenhar", nome, VOZ_QWEN_MODELO_DESENHO),
-                "--descricao", descricao.strip(),
+                "--descricao", descricao.strip(), "--sotaque", VOZ_QWEN_SOTAQUE,
             ]  # fmt: skip
             processo = _na_placa(
                 "criar a voz", VOZ_QWEN_MODELO_DESENHO, comando, tempo=VOZ_QWEN_TEMPO_MAXIMO

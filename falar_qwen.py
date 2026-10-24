@@ -32,10 +32,19 @@ from pathlib import Path
 
 # O texto que a voz desenhada le para virar referencia: ~12 s, frases de
 # entonacao variada (afirmacao, pergunta, exclamacao), sem nome proprio.
+#
+# Bem brasileiro de proposito ("a gente", "pra", "né", "tá"): o modelo so
+# conhece "Portuguese", e um texto neutro puxa para o de Portugal. O jeito de
+# falar da referencia e o que o clone copia depois.
 TEXTO_DE_REFERENCIA = (
-    "Oi! Que bom que você chegou. Hoje eu quero te contar uma coisa simples, "
-    "mas que faz diferença no dia a dia. Você já parou para pensar nisso? "
-    "Então presta atenção, porque vale a pena."
+    "Oi, tudo bem? Que bom que você chegou! Hoje a gente vai falar de uma coisa "
+    "simples, mas que faz muita diferença no dia a dia, né? Você já parou pra "
+    "pensar nisso? Então presta atenção, que tá valendo a pena."
+)
+# Somado a descricao de toda voz desenhada. O instruct entende melhor ingles.
+SOTAQUE_PADRAO = (
+    "Brazilian Portuguese speaker with a natural accent from Brazil "
+    "(not European Portuguese, not from Portugal)."
 )
 # Trecho por chamada ao modelo. Textos longos numa chamada so tendem a
 # desandar no fim (voz que muda, palavra repetida); frases agrupadas ate aqui
@@ -143,8 +152,9 @@ def desenhar(args) -> int:
     pasta = Path(args.voz_dir)
     pasta.mkdir(parents=True, exist_ok=True)
     modelo = _modelo(args.modelo, args.dispositivo)
+    instrucao = f"{args.descricao.strip().rstrip('.')}. {args.sotaque}".strip()
     wavs, taxa = modelo.generate_voice_design(
-        text=TEXTO_DE_REFERENCIA, language=args.idioma, instruct=args.descricao
+        text=TEXTO_DE_REFERENCIA, language=args.idioma, instruct=instrucao
     )
     sf.write(pasta / "referencia.wav", wavs[0], taxa, format="WAV")
     (pasta / "referencia.txt").write_text(TEXTO_DE_REFERENCIA + "\n", encoding="utf-8")
@@ -195,6 +205,7 @@ def main() -> int:
             s.add_argument("--saida", required=True)
         if nome == "desenhar":
             s.add_argument("--descricao", required=True)
+            s.add_argument("--sotaque", default=SOTAQUE_PADRAO)
         if nome == "importar":
             s.add_argument("--gravacao", required=True)
             s.add_argument("--texto", default="")

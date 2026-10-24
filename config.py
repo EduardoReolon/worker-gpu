@@ -529,6 +529,13 @@ VOZ_QWEN_MODELO_DESENHO = os.environ.get(
     "VOZ_QWEN_MODELO_DESENHO", "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign"
 )
 VOZ_QWEN_IDIOMA = os.environ.get("VOZ_QWEN_IDIOMA", "Portuguese")
+# Somado a descricao de toda voz CRIADA por descricao: o modelo so conhece
+# "Portuguese" e, sem isto, tende ao de Portugal. Vazio desliga.
+VOZ_QWEN_SOTAQUE = os.environ.get(
+    "VOZ_QWEN_SOTAQUE",
+    "Brazilian Portuguese speaker with a natural accent from Brazil "
+    "(not European Portuguese, not from Portugal).",
+)
 VOZ_QWEN_DISPOSITIVO = os.environ.get("VOZ_QWEN_DISPOSITIVO", "cuda").strip().lower()
 # Cada fala carrega o modelo (~10 a 20 s) antes de falar: o teto e maior que o
 # do Kokoro. O cliente precisa esperar pelo menos isto.

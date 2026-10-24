@@ -91,6 +91,7 @@ p = argparse.ArgumentParser()
 p.add_argument("modo"); p.add_argument("--voz-dir"); p.add_argument("--modelo")
 p.add_argument("--dispositivo"); p.add_argument("--idioma"); p.add_argument("--saida")
 p.add_argument("--descricao"); p.add_argument("--gravacao"); p.add_argument("--texto")
+p.add_argument("--sotaque")
 a = p.parse_args()
 pasta = pathlib.Path(a.voz_dir)
 if a.modo == "falar":
@@ -105,6 +106,7 @@ elif a.modo == "desenhar":
     (pasta / "referencia.wav").write_bytes(b"RIFF")
     (pasta / "referencia.txt").write_text("Oi! Que bom.")
     (pasta / "descricao.txt").write_text(a.descricao)
+    assert "Brazil" in a.sotaque
 else:
     if open(a.gravacao, "rb").read() == b"curta":
         print("a gravacao tem menos de 3 s", file=sys.stderr); sys.exit(2)
