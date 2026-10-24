@@ -111,6 +111,21 @@ Para cortar o silêncio do começo e do fim no mesmo passo (aqui, começando em
 ffmpeg -i gravacao.m4a -ss 0.5 -to 14 -ac 1 -ar 24000 minha_voz.wav
 ```
 
+## Já tenho vários áudios curtos (ex.: as falas do publi-bot)
+
+Junte-os numa pasta e rode:
+
+```bash
+./deploy/montar_referencia.sh eduardo ~/gravacoes
+```
+
+Ele mede o ruído de cada áudio e escolhe os mais limpos até ~15 s, deixando
+de fora os bem mais ruidosos (chuva, motor), se der para ficar sem eles.
+Depois atenua o ruído constante, corta o silêncio das pontas, iguala o volume
+e junta tudo. Por fim, transcreve pelo Whisper do worker, mostra o texto e
+cria a voz se você confirmar. Antes de confirmar, ouça
+`voz/montagem/eduardo.wav` e confira o texto.
+
 ## Criar a voz
 
 Passe **exatamente** o que você disse, inclusive se trocou alguma palavra na
