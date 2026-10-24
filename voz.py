@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 import re
+import shutil
 import subprocess
 import tempfile
 import time
@@ -42,6 +43,8 @@ import recursos
 import respostas
 from arbitro import ARBITRO, GpuOcupada
 from config import (
+    VOZ_ACABAMENTO,
+    VOZ_ACABAMENTO_FILTROS,
     VOZ_CONVERSAO,
     VOZ_CONVERSAO_DISPOSITIVO,
     VOZ_CONVERSAO_MAXIMO_BYTES,
@@ -274,7 +277,7 @@ def falar(pedido: PedidoDeFala):
                 f"o {motor} saiu com {processo.returncode}: {processo.stderr.strip()[-400:]}",
             )
         formato = "wav" if "FORMATO wav" in processo.stdout else "mp3"
-        conteudo = saida.read_bytes()
+        conteudo, formato = acabamento(saida.read_bytes(), formato)
     _ultimo.update(
         motor=motor,
         voz=voz if motor == "kokoro" else f"qwen:{voz}",
@@ -282,6 +285,53 @@ def falar(pedido: PedidoDeFala):
         caracteres=len(texto),
     )
     return Response(conteudo, media_type="audio/wav" if formato == "wav" else "audio/mpeg")
+
+
+def _ffmpeg() -> str | None:
+    return shutil.which("ffmpeg")
+
+
+_avisou_sem_ffmpeg = False
+
+
+def acabamento(conteudo: bytes, formato: str) -> tuple[bytes, str]:
+    """A fala com o acabamento de locucao (`VOZ_ACABAMENTO_FILTROS`), em MP3.
+
+    Nunca derruba a fala: sem ffmpeg, ou se ele falhar, devolve o audio como
+    veio. O acabamento e melhoria, nao condicao."""
+    global _avisou_sem_ffmpeg
+    if not VOZ_ACABAMENTO:
+        return conteudo, formato
+    ffmpeg = _ffmpeg()
+    if ffmpeg is None:
+        if not _avisou_sem_ffmpeg:
+            logger.warning("VOZ_ACABAMENTO ligado, mas sem ffmpeg: a voz sai sem acabamento.")
+            _avisou_sem_ffmpeg = True
+        return conteudo, formato
+    try:
+        processo = subprocess.run(  # noqa: S603 - comando montado aqui, sem shell
+            [
+                ffmpeg, "-hide_banner", "-loglevel", "error", "-i", "pipe:0",
+                "-af", VOZ_ACABAMENTO_FILTROS,
+                # O loudnorm trabalha em 192 kHz; volta para uma taxa de fala.
+                "-ar", "44100", "-ac", "1", "-c:a", "libmp3lame", "-b:a", "128k",
+                "-f", "mp3", "pipe:1",
+            ],
+            input=conteudo,
+            capture_output=True,
+            timeout=60,
+        )  # fmt: skip
+    except subprocess.TimeoutExpired:
+        logger.warning("Acabamento passou de 60s; a voz sai sem ele.")
+        return conteudo, formato
+    if processo.returncode != 0 or not processo.stdout:
+        logger.warning(
+            "Acabamento falhou (%s): %s",
+            processo.returncode,
+            processo.stderr[-300:].decode(errors="replace"),
+        )
+        return conteudo, formato
+    return processo.stdout, "mp3"
 
 
 def _descricao_da_voz(nome: str) -> dict:
@@ -432,7 +482,7 @@ def converter(audio: UploadFile, voice: str = Form("")):
                 f"a conversao saiu com {processo.returncode}: {processo.stderr.strip()[-400:]}",
             )
         formato = "wav" if "FORMATO wav" in processo.stdout else "mp3"
-        convertida = saida.read_bytes()
+        convertida, formato = acabamento(saida.read_bytes(), formato)
     _ultima_conversao.update(
         voz=f"qwen:{alvo.parent.name}",
         segundos=round(time.monotonic() - inicio, 1),
@@ -449,6 +499,7 @@ def estado() -> dict:
         "voz_dir": VOZ_DIR,
         "voz_padrao": VOZ_PADRAO,
         "campos": dict(CAMPOS_USADOS),
+        "acabamento": {"ligado": VOZ_ACABAMENTO, "ffmpeg": _ffmpeg() is not None},
         "ultimo": dict(_ultimo) or None,
     }
     if VOZ_CONVERSAO:

@@ -553,6 +553,22 @@ VOZ_CONVERSAO_TEMPO_MAXIMO = _inteiro("VOZ_CONVERSAO_TEMPO_MAXIMO", 300)
 VOZ_CONVERSAO_SEGUNDOS_MAXIMOS = _inteiro("VOZ_CONVERSAO_SEGUNDOS_MAXIMOS", 120)
 VOZ_CONVERSAO_MAXIMO_BYTES = _inteiro("VOZ_CONVERSAO_MAXIMO_BYTES", 25 * 1024 * 1024)
 
+# Acabamento de locucao em toda fala que sai do worker (Kokoro, Qwen e
+# conversao), pelo ffmpeg, sem a placa: corta o grave embolado, tira o
+# abafado, realca a presenca, suaviza os "s", comprime e normaliza o volume
+# (-16 LUFS, o de podcast e redes). Nao muda o timbre: deixa a voz "de radio".
+# Sem o ffmpeg instalado, a fala sai sem acabamento (e o log avisa).
+VOZ_ACABAMENTO = _booleano("VOZ_ACABAMENTO", True)
+VOZ_ACABAMENTO_FILTROS = os.environ.get(
+    "VOZ_ACABAMENTO_FILTROS",
+    "highpass=f=80,"
+    "equalizer=f=300:t=q:w=1:g=-2.5,"
+    "equalizer=f=4000:t=q:w=1:g=2.5,"
+    "deesser=i=0.4,"
+    "acompressor=threshold=-18dB:ratio=3:attack=5:release=80:makeup=2,"
+    "loudnorm=I=-16:TP=-1.5:LRA=11",
+)
+
 
 # ---------------------------------------------------------------------------
 # Arbitragem

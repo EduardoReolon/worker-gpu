@@ -1,5 +1,5 @@
 {
-  "_contrato_versao": "2.16",
+  "_contrato_versao": "2.17",
   "_rota": "GET /v1/audio/voices (com credencial)",
   "_nota": "As vozes que este worker fala, para o campo `voice` do POST /v1/audio/speech. `motor` diz quem fala: `kokoro` (CPU, nunca espera a placa) ou `qwen` (na placa, passa pelo arbitro: com outro trabalho rodando leva 503 gpu_ocupada com Retry-After, como a imagem). `padrao` e a voz de um pedido com `voice` vazio ou com um nome da OpenAI (alloy, nova...).",
   "_nota_nomes": "Uma voz do Kokoro e `pf_dora` (ou `kokoro:pf_dora`); uma do Qwen e SEMPRE `qwen:<nome>`. O prefixo `motor:` existe para nao confundir com o id de outro servico. Qualquer outra voz (id da ElevenLabs, `pt-BR-...` do Google, qwen:<nome> que nao existe) leva 422 `voz_desconhecida`: o cliente com varios servicos passa para o proximo.",

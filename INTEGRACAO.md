@@ -1061,6 +1061,11 @@ Content-Type: application/json
   silêncio. Quem tem mais de um serviço de voz deve passar para o próximo.
 - **`model`** é informativo; a voz é que manda.
 - **`speed`** só vale no Kokoro.
+- **Acabamento de locução** (`VOZ_ACABAMENTO`, ligado de padrão): toda fala
+  que sai, de qualquer motor e da conversão, passa pelo `ffmpeg`. Ele corta o
+  grave embolado, tira o abafado, realça a presença, suaviza os "s", comprime
+  e normaliza para -16 LUFS. Não muda o timbre. Sai em MP3, 44,1 kHz. Sem o
+  `ffmpeg`, ou se ele falhar, a fala sai como o motor gravou.
 - **`instructions`** (OpenAI) e **`previous_text` / `next_text`** (ElevenLabs)
   são aceitos e **ignorados** nos dois motores; `voz.campos` no `/health/` diz
   isso. O clone do Qwen (modelo Base) não tem controle por instrução: o tom
@@ -1208,6 +1213,14 @@ pontos merecem olhada:
   cabeçalho — a única forma de 503 que saía daqui sem nada para decidir;
 - **`/health/` ganhou `ollama.carregados_detalhe`** e passou a nunca responder
   500. `ollama.carregados` continua sendo a lista de nomes, intocada;
+## O que mudou na 2.17
+
+- **acabamento de locução** em toda fala de `/v1/audio/speech` e
+  `/v1/audio/convert` (`VOZ_ACABAMENTO`, ligado de padrão): volume normalizado
+  em -16 LUFS. Quem normalizava do seu lado pode continuar: o resultado é o
+  mesmo;
+- `/health/` ganhou `voz.acabamento` (`ligado`, `ffmpeg`).
+
 ## O que mudou na 2.16
 
 - **rota nova, `/v1/audio/convert`**: a gravação de uma pessoa no timbre de

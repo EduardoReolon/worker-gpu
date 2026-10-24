@@ -37,6 +37,12 @@ if ! command -v espeak-ng >/dev/null; then
     sudo apt-get install -y -q espeak-ng
 fi
 
+# O acabamento de locucao (VOZ_ACABAMENTO, ligado de padrao) e feito pelo ffmpeg.
+if ! command -v ffmpeg >/dev/null; then
+    echo "  instalando o ffmpeg (acabamento de locucao da voz)"
+    sudo apt-get install -y -q ffmpeg
+fi
+
 mkdir -p "$DESTINO"
 if [[ ! -x "$DESTINO/venv/bin/python" ]]; then
     uv venv --python 3.12 "$DESTINO/venv"

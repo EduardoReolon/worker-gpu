@@ -30,6 +30,8 @@ def cliente(worker, tmp_path, monkeypatch):
     script.write_text(FALSO)
     monkeypatch.setattr(voz, "SCRIPT", script)
     monkeypatch.setattr(voz, "VOZ_PYTHON", sys.executable)
+    # Sem ffmpeg: o audio sai como o motor gravou, e os testes conferem isso.
+    monkeypatch.setattr(voz, "_ffmpeg", lambda: None)
     app = FastAPI()
     app.include_router(voz.router)
     return TestClient(app)
@@ -329,3 +331,40 @@ def test_erros_da_conversao(conversao, cabecalhos, monkeypatch):
 
     monkeypatch.setattr(voz, "VOZ_CONVERSAO", False)
     assert _converter(conversao, cabecalhos).status_code == 404
+
+
+FALSO_FFMPEG = """#!{python}
+import sys
+dados = sys.stdin.buffer.read()
+if dados.startswith(b"ID3 quebre"):
+    sys.stderr.write("filtro invalido"); sys.exit(1)
+sys.stdout.buffer.write(b"LIMPO " + dados)
+"""
+
+
+@pytest.fixture
+def ffmpeg_falso(tmp_path, monkeypatch):
+    import voz
+
+    falso = tmp_path / "ffmpeg"
+    falso.write_text(FALSO_FFMPEG.format(python=sys.executable))
+    falso.chmod(0o755)
+    monkeypatch.setattr(voz, "_ffmpeg", lambda: str(falso))
+
+
+def test_acabamento_em_toda_fala(cliente, cabecalhos, ffmpeg_falso):
+    resposta = cliente.post(
+        "/v1/audio/speech", headers=cabecalhos, json={"voice": "pf_dora", "input": "Oi"}
+    )
+    assert resposta.status_code == 200
+    assert resposta.content == b"LIMPO ID3 pf_dora 1.0 Oi"
+    assert resposta.headers["content-type"] == "audio/mpeg"
+
+
+def test_acabamento_que_falha_nao_derruba_a_fala(worker, ffmpeg_falso, monkeypatch):
+    import voz
+
+    assert voz.acabamento(b"ID3 quebre", "wav") == (b"ID3 quebre", "wav")
+    monkeypatch.setattr(voz, "VOZ_ACABAMENTO", False)
+    assert voz.acabamento(b"ID3 x", "mp3") == (b"ID3 x", "mp3")
+    assert voz.estado()["acabamento"] == {"ligado": False, "ffmpeg": True}
