@@ -17,11 +17,31 @@ Description=worker-gpu — arbitro de GPU (texto, imagem, conversao)
 After=network-online.target ollama.service
 Wants=network-online.target
 
+# Aviso na tela quando ele cai. Liga com `WORKER_AVISO_QUEDA=sim` no `.env`:
+# o `instalar.sh` copia o `worker-gpu-aviso.service` e troca o marcador abaixo
+# por `OnFailure=`. Nao descomente nada aqui — este molde e versionado.
+#
+# Mora em `[Unit]`, e nao em `[Service]`: la o systemd ignora a chave com so
+# um aviso no journal, e o aviso de queda nunca dispararia.
+#
+# Vale ligar justamente porque a morte por memoria e SILENCIOSA: o
+# `Restart=always` abaixo traz o worker de volta em 10s, entao um worker
+# morrendo em laco parece um worker funcionando devagar.
+LINHA_DE_AVISO
+
 [Service]
 Type=simple
 LINHA_DE_USUARIO
 WorkingDirectory=RAIZ
 EnvironmentFile=RAIZ/.env
+
+# Duas arenas do alocador da glibc, e nao uma por thread (o padrao chega a
+# 8 x nucleos). Cada arena segura a propria memoria livre, e com o pool de
+# threads do servidor e as threads de prazo de cada trabalho, os GB que um
+# modelo descarregado soltou ficavam espalhados em arenas que nao devolviam
+# nada ao sistema. Junto com o `malloc_trim` das descargas, e o que faz o RSS
+# descer de verdade.
+Environment=MALLOC_ARENA_MAX=2
 
 # `--host` e `--port` vem do .env. Numa maquina que atende outras, precisam
 # ser o endereco da rede privada e NUNCA 0.0.0.0: um endpoint que roda modelo
@@ -42,6 +62,64 @@ RestartSec=10
 # Quem limita a duracao de um trabalho e o `IMAGEM_TEMPO_MAXIMO`, que desiste
 # sozinho; aqui basta o tempo de terminar um passo e soltar a placa.
 TimeoutStopSec=90
+
+# ---------------------------------------------------------------------------
+# Memoria: o worker morre antes de levar a maquina com ele
+# ---------------------------------------------------------------------------
+# O worker retem RAM POR DESENHO. `enable_model_cpu_offload()` mantem os pesos
+# do modelo de imagem na RAM e sobe para a placa so o submodulo em uso: e o que
+# faz o pico de VRAM cair de ~7 GB para ~5,4 GB e caber ao lado do Ollama. O
+# preco sao 5 a 6 GB de memoria ANONIMA parada entre pedidos.
+#
+# Memoria anonima parada e o primeiro alvo do kernel quando ele precisa de
+# paginas. Os pesos do Ollama nao sao: eles sao um arquivo mapeado, e sob
+# pressao o kernel descarta aquelas paginas de graca. As do worker precisam ser
+# ESCRITAS no swap antes de serem tomadas — e foi por isso que, nesta maquina,
+# quem foi para o swap foi o worker e nao o modelo de 30B.
+#
+# `MemorySwapMax=0` **proibe** este servico de usar swap. Nao e so economia de
+# SSD: um worker no swap nao da erro e nao fica lento de um jeito que se note —
+# ele fica lento de um jeito que se atribui ao modelo.
+MemorySwapMax=0
+
+# `MemoryMax` e a parede: passando dela, o processo e MORTO.
+#
+# `MemoryHigh` (o freio) vem DESLIGADO (`infinity`), e de proposito. Acima
+# dele o kernel nao mata: estrangula. O processo quase para, segura a placa e
+# o lock, e ninguem recebe resposta — foi assim que um pedido de imagem prendeu
+# o worker por minutos, com CPU e GPU paradas, ate o cliente desistir pelo
+# proprio timeout. Morrer e melhor que isso: `Restart=always` sobe de novo em
+# 10s, o lock da GPU e um `threading.Lock` que morre com o processo (nao ha
+# lock preso possivel), o aviso de queda dispara e o cliente ve a falha.
+#
+# Ajuste para a SUA maquina. Numa de 32 GB, 18G cobre a carga do Z-Image em
+# 4 bits (o Ollama ja soltou o modelo de texto nessa hora) e sobra para o
+# desktop.
+#
+# Os valores vem do `.env` (`WORKER_MEMORY_MAX`, e `WORKER_MEMORY_HIGH` para
+# quem quiser o freio de volta), porque
+# esta copia e REESCRITA a cada `instalar.sh` — ajustar aqui seria perder o
+# ajuste no proximo install, em silencio.
+MemoryHigh=MEMORIA_FREIO
+MemoryMax=MEMORIA_PAREDE
+
+# Quando o SISTEMA fica sem memoria, que morra o worker — nao o navegador.
+#
+# Precisa do `systemd-oomd` ativo (`systemctl status systemd-oomd`). Sem ele
+# estas duas linhas sao ignoradas em silencio, e a protecao volta a ser o
+# `MemoryMax` acima.
+ManagedOOMMemoryPressure=kill
+ManagedOOMMemoryPressureLimit=80%
+
+# ---------------------------------------------------------------------------
+# Prioridade: o desktop vem primeiro
+# ---------------------------------------------------------------------------
+# A difusao satura a CPU durante minutos, e o Docling tambem. Sem isto, mover
+# o mouse enquanto o worker trabalha engasga — o que e absurdo, porque o
+# trabalho dele nao tem pressa e o seu mouse tem.
+Nice=10
+CPUWeight=50
+IOWeight=50
 
 NoNewPrivileges=true
 PrivateTmp=true

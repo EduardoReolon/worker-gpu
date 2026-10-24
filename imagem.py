@@ -28,32 +28,54 @@ tamanho para "economizar" nao economiza; o que muda o tempo e o modelo.
 from __future__ import annotations
 
 import base64
-import gc
+import importlib.util
 import io
 import logging
 import os
 import threading
 import time
+from dataclasses import dataclass, field
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 import ollama
+import prazo
+import recursos
 import respostas
 from arbitro import ARBITRO, GpuOcupada
 from config import (
+    IMAGEM_AREA_MAXIMA_MP,
     IMAGEM_DEVICE,
+    IMAGEM_DTYPE,
     IMAGEM_GUIDANCE,
+    IMAGEM_IP_ADAPTER,
+    IMAGEM_IP_ADAPTER_CODIFICADOR,
+    IMAGEM_IP_ADAPTER_PESO,
+    IMAGEM_IP_ADAPTER_SUBPASTA,
     IMAGEM_LADO_MAXIMO,
     IMAGEM_MAXIMO,
     IMAGEM_MODELO,
-    IMAGEM_NEGATIVO,
     IMAGEM_OCIOSO_SEGUNDOS,
     IMAGEM_PASSOS,
     IMAGEM_PERMITIR_CPU,
+    IMAGEM_QUANTIZAR,
+    IMAGEM_QUANTIZAR_COMPONENTES,
+    IMAGEM_REFERENCIA_CAMADAS,
+    IMAGEM_REFERENCIA_DTYPE,
+    IMAGEM_REFERENCIA_GUIDANCE,
+    IMAGEM_REFERENCIA_MODELO,
+    IMAGEM_REFERENCIA_PASSOS,
+    IMAGEM_REFERENCIA_SCHEDULER,
+    IMAGEM_REFERENCIA_VAE,
+    IMAGEM_REFERENCIAS_MAXIMAS,
+    IMAGEM_SCHEDULER,
     IMAGEM_TEMPO_MAXIMO,
+    IMAGEM_TEMPO_TRAVADO,
+    IMAGEM_VAE,
     OLLAMA_DESCARREGAR_PARA_IMAGEM,
 )
+from prazo import WorkerTravado
 from seguranca import conferir
 
 logger = logging.getLogger("worker-gpu.imagem")
@@ -65,23 +87,194 @@ class TempoEsgotado(RuntimeError):
     """A geracao passou de `IMAGEM_TEMPO_MAXIMO`."""
 
 
-_pipeline = None
+@dataclass(frozen=True)
+class Perfil:
+    """Um modelo de imagem e o jeito de carrega-lo e de chama-lo.
+
+    Ha dois: o `principal` (o de mais qualidade, `IMAGEM_*`) e o de
+    `referencia` (`IMAGEM_REFERENCIA_*`), que aceita IP-Adapter e e usado so
+    quando o pedido traz imagens de personagem. Um so fica carregado por vez.
+    """
+
+    nome: str
+    modelo: str
+    dtype: str
+    quantizar: str = "nao"
+    componentes: tuple = field(default_factory=tuple)
+    vae: str = ""
+    scheduler: str = ""
+    passos: int = 30
+    guidance: float = 6.0
+    ip_adapter: bool = False
+
+
+def perfil_principal() -> Perfil:
+    return Perfil(
+        nome="principal",
+        modelo=IMAGEM_MODELO,
+        dtype=IMAGEM_DTYPE,
+        quantizar=IMAGEM_QUANTIZAR,
+        componentes=tuple(IMAGEM_QUANTIZAR_COMPONENTES),
+        vae=IMAGEM_VAE,
+        scheduler=IMAGEM_SCHEDULER,
+        passos=IMAGEM_PASSOS,
+        guidance=IMAGEM_GUIDANCE,
+    )
+
+
+def perfil_referencia() -> Perfil | None:
+    """O perfil com IP-Adapter, ou None se as referencias estao desligadas."""
+    if not IMAGEM_REFERENCIA_MODELO:
+        return None
+    return Perfil(
+        nome="referencia",
+        modelo=IMAGEM_REFERENCIA_MODELO,
+        dtype=IMAGEM_REFERENCIA_DTYPE,
+        vae=IMAGEM_REFERENCIA_VAE,
+        scheduler=IMAGEM_REFERENCIA_SCHEDULER,
+        passos=IMAGEM_REFERENCIA_PASSOS,
+        guidance=IMAGEM_REFERENCIA_GUIDANCE,
+        ip_adapter=True,
+    )
+
+
+class _Carregado:
+    """O pipeline residente e o de pintura derivado dele, com os mesmos pesos.
+
+    O de pintura (`AutoPipelineForInpainting.from_pipe`) nao carrega nada de
+    novo: reaproveita os modulos do base. O que nao pode ser compartilhado sao
+    os ganchos do `enable_model_cpu_offload` — instalados pelos dois nos
+    mesmos modulos, um desfaria o outro. Por isso so UM fica com os ganchos:
+    trocar de modo os reinstala (o proprio `enable_model_cpu_offload` remove
+    os anteriores), o que custa so mover os pesos para a RAM.
+    """
+
+    def __init__(self, base, perfil: Perfil, dispositivo: str):
+        self.base = base
+        self.perfil = perfil
+        self.dispositivo = dispositivo
+        self.pintura = None
+        self.ativo = "base"
+
+    def ativar(self, modo: str):
+        if modo == "base":
+            pipe = self.base
+        else:
+            if self.pintura is None:
+                from diffusers import AutoPipelineForInpainting
+
+                if self.dispositivo == "cuda":
+                    self.base.remove_all_hooks()
+                self.pintura = AutoPipelineForInpainting.from_pipe(self.base)
+                self.pintura.set_progress_bar_config(disable=True)
+                self.ativo = ""
+            pipe = self.pintura
+
+        if self.dispositivo == "cuda" and self.ativo != modo:
+            pipe.enable_model_cpu_offload()
+        self.ativo = modo
+        return pipe
+
+
+_pipeline: _Carregado | None = None
 _dispositivo_do_pipeline = ""
+# "sdxl", "outra" ou "" (ainda nao carregou). A grade de proporcoes e do SDXL:
+# avisar sobre ela num modelo de outra familia mandaria mudar o que esta certo.
+_familia_do_pipeline = ""
 _ultimo_dispositivo = ""
 _baixado = False
 _trava = threading.Lock()
 _temporizador: threading.Timer | None = None
 
 
+# As proporcoes em que o SDXL foi treinado. Metade da grade; a outra metade sao
+# as mesmas deitadas, e `GRADE_DO_SDXL` junta as duas.
+#
+# Todas ficam em torno de 1,05 megapixel — a grade e de PROPORCOES a area
+# constante, e nao de tamanhos livres. Gerar fora dela nao da erro: da assunto
+# duplicado, geometria torta e composicao incoerente, porque o modelo nunca viu
+# um enquadramento daquele formato.
+_MEIA_GRADE = (
+    (512, 2048),
+    (512, 1984),
+    (512, 1920),
+    (512, 1856),
+    (576, 1792),
+    (576, 1728),
+    (576, 1664),
+    (640, 1600),
+    (640, 1536),
+    (704, 1472),
+    (704, 1408),
+    (704, 1344),
+    (768, 1344),
+    (768, 1280),
+    (832, 1216),
+    (832, 1152),
+    (896, 1152),
+    (896, 1088),
+    (960, 1088),
+    (960, 1024),
+    (1024, 1024),
+)
+GRADE_DO_SDXL = tuple(
+    sorted(
+        {(largura, altura) for largura, altura in _MEIA_GRADE}
+        | {(altura, largura) for largura, altura in _MEIA_GRADE}
+    )
+)
+
+# Amostradores disponiveis, por nome curto. O amostrador decide como os passos
+# caminham do ruido para a imagem, e com pouco passo a escolha aparece.
+#
+# Publicado (e nao privado) porque a `bancada.py` compara amostradores usando
+# ESTE mapa: uma bancada com a sua propria lista mediria uma configuracao que o
+# servico nao usa, que e o jeito mais facil de escolher errado.
+SCHEDULERS = {
+    "dpm++2m_karras": ("DPMSolverMultistepScheduler", {"use_karras_sigmas": True}),
+    "dpm++2m": ("DPMSolverMultistepScheduler", {}),
+    "euler": ("EulerDiscreteScheduler", {}),
+    "euler_a": ("EulerAncestralDiscreteScheduler", {}),
+    "unipc": ("UniPCMultistepScheduler", {}),
+    "ddim": ("DDIMScheduler", {}),
+}
+
+# Palavras que so aparecem em texto portugues, para o aviso de prompt.
+#
+# Nao e deteccao de idioma: e uma peneira grosseira de proposito, e errar para
+# "nao avisa" e o certo. Um aviso a mais num prompt em ingles seria ruido no
+# journal; o aviso que falta e so um aviso que falta.
+_PISTAS_DE_PORTUGUES = (
+    " de ",
+    " da ",
+    " do ",
+    " com ",
+    " uma ",
+    " um ",
+    " que ",
+    " para ",
+    " sem ",
+    "cao ",
+    "ção",
+)
+
+
 class PedidoDeImagem(BaseModel):
     prompt: str
     model: str = ""
     n: int = 1
-    size: str = "1024x576"
+    # 1344x768 e nao 1024x576: e a proporcao 16:9 que o SDXL conhece do
+    # treino. Veja `IMAGEM_LADO_MAXIMO` no `config.py`.
+    size: str = "1344x768"
     # Aceito e ignorado: este servico so devolve base64. Um link temporario
     # expiraria antes da publicacao e viraria imagem quebrada no site.
     response_format: str = "b64_json"
     seed: int | None = Field(default=None)
+    # Repassado como veio, e so quando veio. O worker nao tem negativo proprio:
+    # um padrao aplicado a todo pedido brigava com quem pedia texto na imagem.
+    # Modelos destilados (Z-Image-Turbo, FLUX schnell) rodam com guidance 0 e
+    # ignoram o negativo.
+    negative_prompt: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -107,6 +300,33 @@ def resolver_dispositivo() -> str:
         return "cpu"
 
     return "cuda" if tem_placa else "cpu"
+
+
+def conferir_configuracao() -> None:
+    """Recusa subir com precisao ou quantizacao invalidas.
+
+    Na subida, e nao no primeiro pedido: o modelo carrega preguicosamente, e um
+    `bitsandbytes` ausente so apareceria como 500 na primeira imagem.
+    """
+    if IMAGEM_DTYPE not in ("float16", "bfloat16"):
+        raise RuntimeError(f"IMAGEM_DTYPE={IMAGEM_DTYPE!r}. Use float16 ou bfloat16.")
+    if IMAGEM_REFERENCIA_CAMADAS not in ("aparencia", "todas"):
+        raise RuntimeError(
+            f"IMAGEM_REFERENCIA_CAMADAS={IMAGEM_REFERENCIA_CAMADAS!r}. Use aparencia ou todas."
+        )
+    if IMAGEM_QUANTIZAR not in ("nao", "4bit", "8bit"):
+        raise RuntimeError(f"IMAGEM_QUANTIZAR={IMAGEM_QUANTIZAR!r}. Use nao, 4bit ou 8bit.")
+    if 0 < IMAGEM_TEMPO_TRAVADO <= IMAGEM_TEMPO_MAXIMO:
+        raise RuntimeError(
+            f"IMAGEM_TEMPO_TRAVADO={IMAGEM_TEMPO_TRAVADO} precisa ser maior que "
+            f"IMAGEM_TEMPO_MAXIMO={IMAGEM_TEMPO_MAXIMO}: uma geracao lenta mas saudavel "
+            f"tem que levar 503 `timeout`, e nao derrubar o processo."
+        )
+    if IMAGEM_QUANTIZAR != "nao" and importlib.util.find_spec("bitsandbytes") is None:
+        raise RuntimeError(
+            f"IMAGEM_QUANTIZAR={IMAGEM_QUANTIZAR}, mas o bitsandbytes nao esta instalado.\n"
+            f"  ./venv/bin/pip install bitsandbytes"
+        )
 
 
 def modelo_esta_no_disco() -> bool:
@@ -138,31 +358,175 @@ def modelo_esta_no_disco() -> bool:
     return True
 
 
-def _montar_pipeline(dispositivo: str):
+def aplicar_scheduler(pipe, nome: str):
+    """Troca o amostrador do pipeline. `nome` vazio mantem o do modelo.
+
+    `from_config` e nao um construtor novo: o amostrador precisa herdar a
+    configuracao de ruido DO MODELO (betas, passos de treino). Construido do
+    zero com os padroes da classe, ele gera — e gera errado, sem erro nenhum.
+    """
+    if not nome:
+        return pipe
+
+    if nome not in SCHEDULERS:
+        raise RuntimeError(
+            f"IMAGEM_SCHEDULER={nome!r} nao existe. Use um de: {', '.join(sorted(SCHEDULERS))}"
+        )
+
+    atual = type(pipe.scheduler).__name__
+    if "FlowMatch" in atual:
+        # Os amostradores da lista sao de difusao classica (SDXL, SD 1.5). Num
+        # modelo de "flow matching" (Z-Image, FLUX, SD 3.5) o `from_config`
+        # nao reclama — ele gera ruido. Recusar e o unico jeito de nao sair
+        # imagem estragada sem erro.
+        raise RuntimeError(
+            f"IMAGEM_SCHEDULER={nome!r} nao serve a este modelo, que usa {atual}. "
+            f"Deixe IMAGEM_SCHEDULER vazio no .env."
+        )
+
+    import diffusers
+
+    classe, extras = SCHEDULERS[nome]
+    pipe.scheduler = getattr(diffusers, classe).from_config(pipe.scheduler.config, **extras)
+    logger.info("Amostrador: %s (%s)", nome, classe)
+
+    return pipe
+
+
+# O `scaling_factor` do VAE do SDXL. E ele que identifica a familia, e nao o
+# nome do repositorio: `RealVisXL`, `Juggernaut-XL` e `animagine-xl` sao todos
+# SDXL e nao tem substring em comum que de para procurar sem errar.
+_ESCALA_DO_VAE_DO_SDXL = 0.13025
+
+
+def _avisar_do_vae(pipe, vae: str, meia: bool) -> None:
+    """O VAE do SDXL estoura em float16, e o defeito e visivel.
+
+    Manchas, faixas de cor e, as vezes, imagem preta — o tipo de defeito que
+    quem olha chama de "cara de IA" sem saber apontar o que e.
+
+    A familia e descoberta no OBJETO CARREGADO, e nao no nome do modelo. Pelo
+    nome nao da: `RealVisXL_V5.0` e SDXL e nao contem "sdxl"; procurar "xl"
+    solto acertaria ele e erraria em qualquer repositorio com "xl" no meio de
+    outra palavra. O `scaling_factor` do VAE, ao contrario, e um fato do modelo
+    — e os VAE de 16 canais (SD 3.5, FLUX) nao tem esse problema e nao caem
+    aqui.
+
+    O worker nao corrige sozinho: trocar o VAE por conta propria mudaria a
+    saida de quem nao pediu. Mas ficar calado seria deixar a imagem sair pior
+    sem nada denunciando, que e o unico defeito que este servico nao aceita.
+    """
+    global _familia_do_pipeline
+
+    try:
+        config = pipe.vae.config
+        canais = int(config.latent_channels)
+        escala = float(config.scaling_factor)
+    except Exception:
+        _familia_do_pipeline = "outra"
+        return
+
+    e_sdxl = canais == 4 and abs(escala - _ESCALA_DO_VAE_DO_SDXL) <= 1e-4
+    _familia_do_pipeline = "sdxl" if e_sdxl else "outra"
+
+    if vae or not meia or not e_sdxl:
+        return
+
+    logger.warning(
+        "Este modelo usa o VAE do SDXL (scaling_factor=%s) em float16, e "
+        "IMAGEM_VAE esta vazio. Esse VAE estoura em float16 e produz manchas e "
+        "faixas de cor. Ponha IMAGEM_VAE=madebyollin/sdxl-vae-fp16-fix no .env "
+        "e reinicie.",
+        escala,
+    )
+
+
+def _montar_pipeline(
+    dispositivo: str,
+    modelo: str = "",
+    vae: str = "",
+    scheduler: str = "",
+    perfil: Perfil | None = None,
+):
+    """O pipeline como o SERVICO o monta.
+
+    Os parametros existem para a `bancada.py` comparar variantes por aqui, e
+    nao por um caminho proprio: uma bancada que monta o pipeline de outro jeito
+    mede uma configuracao que o servico nao usa.
+    """
     import torch
     from diffusers import AutoPipelineForText2Image
 
+    perfil = perfil or perfil_principal()
+    modelo = modelo or perfil.modelo
+    vae = vae if vae != "" else perfil.vae
+    scheduler = scheduler if scheduler != "" else perfil.scheduler
+
     meia = dispositivo == "cuda"
+    precisao = getattr(torch, perfil.dtype) if meia else torch.float32
     argumentos = {
-        "torch_dtype": torch.float16 if meia else torch.float32,
+        "torch_dtype": precisao,
         "use_safetensors": True,
     }
-    if meia:
+    if meia and perfil.dtype == "float16":
+        # So em float16: e a unica variante que os repositorios SDXL publicam
+        # a parte. Um modelo em bfloat16 ja vem assim no ramo principal.
         argumentos["variant"] = "fp16"
 
-    logger.info("Carregando %s em %s...", IMAGEM_MODELO, dispositivo)
+    if meia and perfil.quantizar != "nao":
+        from diffusers.quantizers import PipelineQuantizationConfig
+
+        if perfil.quantizar == "4bit":
+            backend = "bitsandbytes_4bit"
+            extras = {
+                "load_in_4bit": True,
+                "bnb_4bit_quant_type": "nf4",
+                "bnb_4bit_compute_dtype": precisao,
+            }
+        else:
+            backend, extras = "bitsandbytes_8bit", {"load_in_8bit": True}
+
+        logger.info("Quantizando %s em %s.", ", ".join(perfil.componentes), perfil.quantizar)
+        argumentos["quantization_config"] = PipelineQuantizationConfig(
+            quant_backend=backend,
+            quant_kwargs=extras,
+            components_to_quantize=list(perfil.componentes),
+        )
+
+    if vae:
+        from diffusers import AutoencoderKL
+
+        logger.info("VAE alternativo: %s", vae)
+        argumentos["vae"] = AutoencoderKL.from_pretrained(vae, torch_dtype=precisao)
+
+    logger.info("Carregando %s em %s...", modelo, dispositivo)
     inicio = time.perf_counter()
     try:
-        pipe = AutoPipelineForText2Image.from_pretrained(IMAGEM_MODELO, **argumentos)
+        pipe = AutoPipelineForText2Image.from_pretrained(modelo, **argumentos)
     except Exception:
         if not meia:
             raise
         # Nem todo repositorio publica a variante fp16. Sem esta segunda
         # tentativa, trocar de modelo no `.env` falharia com um erro sobre
         # arquivo ausente que nao menciona `variant`.
-        logger.warning("%s nao tem variante fp16; carregando os pesos completos.", IMAGEM_MODELO)
+        logger.warning("%s nao tem variante fp16; carregando os pesos completos.", modelo)
         argumentos.pop("variant")
-        pipe = AutoPipelineForText2Image.from_pretrained(IMAGEM_MODELO, **argumentos)
+        pipe = AutoPipelineForText2Image.from_pretrained(modelo, **argumentos)
+
+    aplicar_scheduler(pipe, scheduler)
+    # Depois de carregar, porque a familia do VAE se descobre no objeto.
+    _avisar_do_vae(pipe, vae, meia)
+
+    if perfil.ip_adapter:
+        # Antes do offload: o codificador de imagem do IP-Adapter entra no
+        # pipeline como mais um modulo, e o offload precisa conhece-lo.
+        logger.info("IP-Adapter: %s/%s", IMAGEM_IP_ADAPTER_SUBPASTA, IMAGEM_IP_ADAPTER_PESO)
+        pipe.load_ip_adapter(
+            IMAGEM_IP_ADAPTER,
+            subfolder=IMAGEM_IP_ADAPTER_SUBPASTA,
+            weight_name=IMAGEM_IP_ADAPTER_PESO,
+            image_encoder_folder=IMAGEM_IP_ADAPTER_CODIFICADOR,
+        )
 
     if dispositivo == "cuda":
         # `enable_model_cpu_offload`, e NAO `.to("cuda")`. Os pesos ficam na
@@ -179,16 +543,26 @@ def _montar_pipeline(dispositivo: str):
     return pipe
 
 
-def _obter_pipeline(dispositivo: str):
+def _obter_pipeline(dispositivo: str, perfil: Perfil | None = None, modo: str = "base"):
+    """O pipeline pronto para chamar: do `perfil` pedido, no `modo` pedido
+    (`base` gera do zero; `pintura` pinta so a mascara).
+
+    Um so modelo de imagem fica carregado. Pedir outro perfil descarrega o
+    atual antes — com os dois juntos, nem a RAM nem a placa aguentam.
+    """
     global _pipeline, _dispositivo_do_pipeline
 
+    perfil = perfil or perfil_principal()
     with _trava:
-        if _pipeline is not None and _dispositivo_do_pipeline != dispositivo:
+        if _pipeline is not None and (
+            _dispositivo_do_pipeline != dispositivo or _pipeline.perfil != perfil
+        ):
             _descarregar_sem_trava()
         if _pipeline is None:
-            _pipeline = _montar_pipeline(dispositivo)
+            base = _montar_pipeline(dispositivo, perfil=perfil)
+            _pipeline = _Carregado(base, perfil, dispositivo)
             _dispositivo_do_pipeline = dispositivo
-        return _pipeline
+        return _pipeline.ativar(modo)
 
 
 def _descarregar_sem_trava() -> None:
@@ -200,15 +574,7 @@ def _descarregar_sem_trava() -> None:
     logger.info("Descarregando o modelo de imagem e devolvendo a placa.")
     _pipeline = None
     _dispositivo_do_pipeline = ""
-    gc.collect()
-
-    try:
-        import torch
-
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-    except ImportError:
-        pass
+    recursos.devolver_memoria("Modelo de imagem")
 
 
 def descarregar() -> None:
@@ -247,12 +613,27 @@ def _medidas(tamanho: str) -> tuple[int, int]:
     except ValueError as exc:
         raise HTTPException(422, f"size invalido: {tamanho!r}. Use algo como 1024x576.") from exc
 
+    megapixels = largura * altura / 1e6
+    if megapixels > IMAGEM_AREA_MAXIMA_MP:
+        # Teto de AREA, alem do teto por lado. Os dois precisam existir: um
+        # teto de lado em 1536 sozinho deixaria passar 1536x1536, que e o
+        # dobro da area de treino do modelo e VRAM que esta placa nao tem.
+        raise HTTPException(
+            422,
+            f"size {tamanho!r} tem {megapixels:.2f} megapixels, acima do teto de "
+            f"{IMAGEM_AREA_MAXIMA_MP} MP. O SDXL foi treinado em torno de 1,05 MP e "
+            f"gera pior acima disso. Proporcao mais proxima na grade de treino: "
+            f"{_perto_na_grade(largura, altura)}. Ajuste IMAGEM_AREA_MAXIMA_MP se "
+            f"esta placa comportar mais.",
+        )
+
     for medida in (largura, altura):
-        if medida <= 0 or medida % 8:
-            # Os modelos de difusao trabalham num espaco latente 8x menor. Um
-            # lado que nao e multiplo de 8 nao falha: ele e arredondado por
-            # dentro, e a imagem volta com tamanho diferente do pedido.
-            raise HTTPException(422, f"size {tamanho!r}: cada lado precisa ser multiplo de 8.")
+        if medida <= 0 or medida % 16:
+            # 16, e nao 8: o espaco latente e 8x menor, e os modelos de
+            # transformer (Z-Image, FLUX, SD 3.5) ainda o agrupam em blocos de
+            # 2x2. Com 8, um lado como 1352 passava aqui e o pipeline recusava
+            # la dentro, com um 500. Toda a grade do SDXL e multipla de 64.
+            raise HTTPException(422, f"size {tamanho!r}: cada lado precisa ser multiplo de 16.")
         if medida > IMAGEM_LADO_MAXIMO:
             raise HTTPException(
                 422,
@@ -263,6 +644,46 @@ def _medidas(tamanho: str) -> tuple[int, int]:
     return largura, altura
 
 
+def _perto_na_grade(largura: int, altura: int) -> str:
+    """A proporcao treinada mais parecida com a pedida.
+
+    Comparada pela PROPORCAO e nao pela area, porque a area de toda a grade e
+    praticamente a mesma (0,95 a 1,05 MP): comparar por area mandaria todo
+    mundo para o 1024x1024. Quem pede 1200x630 — o tamanho de `og:image` — quer
+    aquele FORMATO, e o que serve a ele e o 1344x704.
+    """
+    if not altura:
+        return "1024x1024"
+
+    pedida = largura / altura
+    melhor = min(GRADE_DO_SDXL, key=lambda medida: abs(medida[0] / medida[1] - pedida))
+
+    return f"{melhor[0]}x{melhor[1]}"
+
+
+def _avisar_de_tamanho_fora_da_grade(largura: int, altura: int) -> None:
+    """Avisa, e nao recusa.
+
+    Recusar quebraria quem tem motivo para pedir outro formato — 1200x630 e o
+    tamanho que as redes sociais pedem para `og:image`, e ele nao esta na
+    grade. Quem pede assim aceita o custo; o que nao se aceita e pagar o custo
+    sem saber que existe.
+    """
+    if (largura, altura) in GRADE_DO_SDXL:
+        return
+    if _familia_do_pipeline != "sdxl":
+        return
+
+    logger.warning(
+        "size %dx%d esta fora da grade de proporcoes em que o SDXL foi treinado. "
+        "Nao da erro, mas costuma sair com assunto duplicado e geometria torta. "
+        "A proporcao treinada mais proxima e %s.",
+        largura,
+        altura,
+        _perto_na_grade(largura, altura),
+    )
+
+
 @router.post("/v1/images/generations", dependencies=[Depends(conferir)])
 def gerar(pedido: PedidoDeImagem):
     """`def` e nao `async def`: rodar difusao no event loop congela o
@@ -271,6 +692,8 @@ def gerar(pedido: PedidoDeImagem):
 
     if not pedido.prompt.strip():
         raise HTTPException(422, "prompt vazio.")
+
+    _avisar_de_prompt_em_portugues(pedido.prompt)
 
     quantas = max(1, min(pedido.n, IMAGEM_MAXIMO))
     largura, altura = _medidas(pedido.size)
@@ -284,10 +707,20 @@ def gerar(pedido: PedidoDeImagem):
 
             dispositivo = resolver_dispositivo()
             try:
-                imagens = gerar_imagens(dispositivo, pedido, quantas, largura, altura)
+                imagens = _com_prazo_duro(
+                    lambda: gerar_imagens(dispositivo, pedido, quantas, largura, altura)
+                )
+            except WorkerTravado as exc:
+                logger.critical("%s Encerrando o processo para o systemd subir outro.", exc)
+                _morrer_em_seguida()
+                return respostas.falha_do_worker("worker_travado", str(exc))
             except TempoEsgotado as exc:
                 logger.warning("%s", exc)
-                return respostas.indisponivel("timeout", str(exc), retry_after=300)
+                # Sem `Retry-After`: para o codigo `timeout` a documentacao
+                # manda reduzir o pedido, e nao voltar igual mais tarde. Mandar
+                # o cabecalho junto seria o contrato se contradizendo dentro da
+                # mesma resposta.
+                return respostas.indisponivel("timeout", str(exc), retry_after=None)
             except Exception as exc:
                 if not _e_falta_de_vram(exc) or dispositivo == "cpu":
                     raise
@@ -314,7 +747,9 @@ def gerar(pedido: PedidoDeImagem):
                 )
                 descarregar()
                 dispositivo = "cpu"
-                imagens = gerar_imagens(dispositivo, pedido, quantas, largura, altura)
+                imagens = _com_prazo_duro(
+                    lambda: gerar_imagens(dispositivo, pedido, quantas, largura, altura)
+                )
 
             _ultimo_dispositivo = dispositivo
     except GpuOcupada as erro:
@@ -332,6 +767,46 @@ def gerar(pedido: PedidoDeImagem):
     }
 
 
+def _avisar_de_prompt_em_portugues(prompt: str) -> None:
+    """Prompt em portugues e o defeito de qualidade mais caro desta rota.
+
+    Os codificadores de texto do SDXL (CLIP ViT-L e OpenCLIP ViT-bigG) foram
+    treinados em legendas da web, esmagadoramente em ingles. Um prompt em
+    portugues nao da erro: ele gera uma imagem a partir do pouco que sobrou de
+    sinal, e o resultado e generico, mal composto, com aquela "cara de IA" que
+    ninguem sabe apontar de onde vem.
+
+    O worker NAO traduz: traduzir em silencio mudaria o pedido de quem chamou,
+    e um prompt trocado sem aviso e pior que um prompt ruim. Ele avisa, e quem
+    integra decide — foi este aviso que revelou que o prompt NEGATIVO deste
+    servico estava em portugues desde o inicio, sem efeito nenhum.
+    """
+    if _familia_do_pipeline == "outra":
+        # O aviso e sobre os CLIP do SDXL. O Z-Image, por exemplo, le o prompt
+        # com um modelo de linguagem (Qwen3) que entende portugues.
+        return
+
+    baixo = f" {prompt.lower()} "
+    pistas = [pista.strip() for pista in _PISTAS_DE_PORTUGUES if pista in baixo]
+
+    if len(pistas) >= 2:
+        logger.warning(
+            "O prompt parece estar em portugues (%s). Os codificadores de texto "
+            "do SDXL foram treinados em ingles: isto nao da erro, mas gera uma "
+            "imagem pior. Mande o prompt em ingles. Prompt: %.120s",
+            ", ".join(pistas[:4]),
+            prompt,
+        )
+
+
+def _com_prazo_duro(trabalho):
+    return prazo.com_prazo_duro(trabalho, IMAGEM_TEMPO_TRAVADO, "imagem", "IMAGEM_TEMPO_TRAVADO")
+
+
+def _morrer_em_seguida(atraso: float = 2.0) -> None:
+    prazo.morrer_em_seguida(atraso)
+
+
 def gerar_imagens(
     dispositivo: str, pedido: PedidoDeImagem, quantas: int, largura: int, altura: int
 ) -> list[bytes]:
@@ -339,6 +814,9 @@ def gerar_imagens(
     import torch
 
     pipe = _obter_pipeline(dispositivo)
+    # Depois de carregar: so aqui se sabe a familia do modelo, e a grade de
+    # proporcoes so vale para o SDXL.
+    _avisar_de_tamanho_fora_da_grade(largura, altura)
 
     gerador = None
     if pedido.seed is not None:
@@ -348,7 +826,7 @@ def gerar_imagens(
 
     saida = pipe(
         prompt=pedido.prompt,
-        negative_prompt=IMAGEM_NEGATIVO or None,
+        negative_prompt=pedido.negative_prompt or None,
         num_images_per_prompt=quantas,
         num_inference_steps=IMAGEM_PASSOS,
         guidance_scale=IMAGEM_GUIDANCE,
@@ -417,7 +895,38 @@ def estado() -> dict:
         "ultimo_dispositivo": _ultimo_dispositivo or "(nada gerado ainda)",
         "baixado": modelo_esta_no_disco(),
         "carregado": _pipeline is not None,
+        # Qual dos dois modelos esta carregado: `principal` ou `referencia`.
+        "carregado_perfil": getattr(_pipeline, "perfil", None) and _pipeline.perfil.nome,
         "passos": IMAGEM_PASSOS,
+        "guidance": IMAGEM_GUIDANCE,
+        # Os tres que decidem qualidade e nao aparecem em lugar nenhum senao
+        # aqui. `vae` vazio num modelo SDXL e o defeito silencioso que o log
+        # avisa na carga; publicado, da para conferir de fora, sem journal.
+        "vae": IMAGEM_VAE or "(o do modelo)",
+        "amostrador": IMAGEM_SCHEDULER or "(o do modelo)",
+        "precisao": IMAGEM_DTYPE,
+        "quantizacao": IMAGEM_QUANTIZAR,
+        "lado_maximo": IMAGEM_LADO_MAXIMO,
+        "area_maxima_mp": IMAGEM_AREA_MAXIMA_MP,
+        # A grade de proporcoes do SDXL, publicada para o cliente validar
+        # contra ELA e nao contra uma copia propria que envelhece.
+        "grade": [f"{largura}x{altura}" for largura, altura in GRADE_DO_SDXL],
         "permite_cpu": IMAGEM_PERMITIR_CPU,
         "tempo_maximo": IMAGEM_TEMPO_MAXIMO,
+        "tempo_travado": IMAGEM_TEMPO_TRAVADO,
+        # O modelo das cenas com personagem (`/v1/images/edits` com
+        # `reference_image`). Vazio: as referencias sao ignoradas, com aviso.
+        "referencia": {
+            "modelo": IMAGEM_REFERENCIA_MODELO or None,
+            "maximo": IMAGEM_REFERENCIAS_MAXIMAS,
+            # `aparencia` (InstantStyle: so a camada de estilo) ou `todas`.
+            "camadas": IMAGEM_REFERENCIA_CAMADAS,
+            "ip_adapter": (
+                "/".join((IMAGEM_IP_ADAPTER, IMAGEM_IP_ADAPTER_SUBPASTA, IMAGEM_IP_ADAPTER_PESO))
+                if IMAGEM_REFERENCIA_MODELO
+                else None
+            ),
+            "passos": IMAGEM_REFERENCIA_PASSOS,
+            "guidance": IMAGEM_REFERENCIA_GUIDANCE,
+        },
     }

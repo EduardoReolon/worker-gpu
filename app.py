@@ -12,6 +12,9 @@ Ollama:
     POST /v1/chat/completions    texto        (repassa ao Ollama)
     POST /v1/images/generations  imagem       (difusao)
     POST /parse/                 conversao    (Docling)
+    POST /v1/audio/transcriptions transcricao (faster-whisper)
+    POST /v1/embeddings          vetorizacao  (multilingual-e5-large)
+    POST /v1/youtube/legenda     legenda      (sem placa)
     GET  /v1/models              catalogo
     GET  /health/                estado, sem credencial
 
@@ -46,12 +49,31 @@ import logging
 
 from fastapi import FastAPI
 
+import animacao
+import contexto
 import conversao
+import edicao
 import imagem
+import modelos
 import ollama
+import recursos
 import texto
+import transcricao
+import vetorizacao
+import voz
+import youtube
 from arbitro import ARBITRO
-from config import CONVERSAO_ATIVA, IMAGEM_ATIVA
+from config import (
+    ANIMACAO_ATIVA,
+    CONVERSAO_ATIVA,
+    IMAGEM_ATIVA,
+    IMAGEM_EDICAO_ATIVA,
+    TRANSCRICAO_ATIVA,
+    VETORIZACAO_ATIVA,
+    VOZ_ATIVA,
+    VOZ_CONVERSAO,
+    YOUTUBE_ATIVA,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(asctime)s %(name)s %(message)s")
 logger = logging.getLogger("worker-gpu")
@@ -60,7 +82,7 @@ logger = logging.getLogger("worker-gpu")
 # ai quem integra precisa olhar, e `INTEGRACAO.md` ganha uma secao.
 # Acrescentar campo nao quebra ninguem e nao sobe nada: todo cliente deve
 # ignorar o que nao conhece.
-CONTRATO_VERSAO = "2.0"
+CONTRATO_VERSAO = "2.17"
 
 app = FastAPI(title="worker-gpu", version=CONTRATO_VERSAO)
 
@@ -69,13 +91,94 @@ app = FastAPI(title="worker-gpu", version=CONTRATO_VERSAO)
 app.include_router(texto.router)
 
 if IMAGEM_ATIVA:
+    # Na subida: o modelo carrega no primeiro pedido, e um `bitsandbytes`
+    # ausente so apareceria ali, como 500.
+    imagem.conferir_configuracao()
     app.include_router(imagem.router)
+    if IMAGEM_EDICAO_ATIVA:
+        app.include_router(edicao.router)
+
+if TRANSCRICAO_ATIVA:
+    # Na subida, pelo mesmo motivo da imagem: o Whisper carrega no primeiro
+    # audio, e um `faster-whisper` ausente so apareceria ali.
+    transcricao.conferir_configuracao()
+    app.include_router(transcricao.router)
+
+if VETORIZACAO_ATIVA:
+    vetorizacao.conferir_configuracao()
+    app.include_router(vetorizacao.router)
+
+if YOUTUBE_ATIVA:
+    youtube.conferir_configuracao()
+    app.include_router(youtube.router)
+
+if VOZ_ATIVA:
+    # O Kokoro mora em outro ambiente: conferido na subida.
+    voz.conferir_configuracao()
+    app.include_router(voz.router)
+
+if ANIMACAO_ATIVA:
+    # O FramePack mora em outro ambiente: conferido na subida, para um
+    # FRAMEPACK_DIR errado nao virar 500 no primeiro pedido.
+    animacao.conferir_configuracao()
+    app.include_router(animacao.router)
 
 if CONVERSAO_ATIVA:
     # Conferido na subida, e nao na primeira conversao: um OCR pedido e
     # ausente so apareceria no PDF digitalizado, que e o caso mais raro.
     conversao.conferir_ocr()
     app.include_router(conversao.router)
+
+
+def _bloco(nome: str, coletar):
+    """Um bloco do `/health/`, ou a descricao do erro no lugar dele.
+
+    O `/health/` NUNCA pode devolver 500. Ele e o endpoint que o instalador, o
+    systemd e quem esta diagnosticando consultam, e uma excecao ali transforma
+    "alguma coisa esta errada" em "tudo esta errado e nao sei o que". Um bloco
+    que falha vira `{"erro": "<tipo>: <mensagem>"}` DENTRO do corpo, com 200 —
+    o processo esta de pe, e e isso que o 200 afirma.
+
+    Pelo mesmo motivo que ele dispensa credencial: um diagnostico que precisa
+    de segredo nao serve para descobrir por que o segredo nao funciona, e um
+    diagnostico que estoura nao serve para descobrir o que estourou.
+    """
+    try:
+        return coletar()
+    except Exception as erro:
+        logger.exception("Falha ao montar o bloco %r do /health/", nome)
+        return {"erro": f"{type(erro).__name__}: {erro}"}
+
+
+def _bloco_do_ollama() -> dict:
+    """Estado do Ollama, numa ida so ao `/api/ps`.
+
+    `carregados` continua sendo a lista de NOMES: e o campo publicado, e ha
+    cliente lendo. `carregados_detalhe` e o registro inteiro, e existe por um
+    motivo: e nele que vem o `context_length` com que cada modelo foi
+    carregado. Janela errada e o defeito que nao aparece — 200, JSON valido,
+    schema respeitado, e o modelo nao viu o inicio do prompt de sistema.
+
+    O campo e uma dica de MAQUINA ("esta configurada errada"), e nao uma
+    confirmacao de PEDIDO: ele e lido por outra viagem, depois, e entre a
+    inferencia e a leitura outro cliente pode ter recarregado o modelo com
+    outra janela.
+    """
+    detalhe = ollama.modelos_carregados_detalhe()
+
+    return {
+        "de_pe": ollama.esta_de_pe(),
+        "carregados": ollama.modelos_carregados(detalhe),
+        "carregados_detalhe": detalhe,
+        # Downloads em curso. Sem isto, um lote inteiro levando
+        # `baixando_modelo` nao teria como ser distinguido, de fora, de um
+        # worker travado — e o download nao aparece em `ocupada`, porque ele
+        # nao usa a placa.
+        "baixando": modelos.estado(),
+        # A janela de contexto: `atual` e a do modelo carregado, lida do
+        # `/api/ps`; `segue_cabecalho` diz que o `X-PubliBot-Contexto` vale.
+        "contexto": contexto.estado(detalhe),
+    }
 
 
 @app.get("/health/")
@@ -90,9 +193,12 @@ def health():
     `def` e nao `async def`: ele toca disco, e no event loop uma leitura
     lenta atrasaria todo o resto. (Foi um `async def` num handler bloqueante
     que fez este servico parar de responder enquanto gerava.)
-    """
-    ocupacao = ARBITRO.ocupacao
 
+    A forma desta resposta esta em `contrato/saude-resposta.json`, e um teste
+    confere que as duas nao divergem. Sem isso o endpoint que todo mundo usa
+    para diagnosticar era o unico sem exemplo publicado — e ja mudou de forma
+    uma vez sem quebrar nada ate doer.
+    """
     corpo = {
         "status": "ok",
         "service": "worker-gpu",
@@ -100,25 +206,52 @@ def health():
         # copiou para os testes dele. Sem um numero publicado, a copia velha
         # do cliente nao tem como se denunciar.
         "contrato_versao": CONTRATO_VERSAO,
-        "ocupada": ocupacao is not None,
-        "ocupante": ocupacao.tarefa if ocupacao else None,
-        # Qual modelo esta em uso agora. Quem planeja um lote le isto junto
-        # com `ollama.carregados` para escolher pedidos que nao paguem troca.
-        "modelo": ocupacao.modelo if ocupacao else None,
-        "ha_segundos": ocupacao.ha_quantos_segundos if ocupacao else 0,
-        "rotas": {
-            "texto": True,
-            "imagem": IMAGEM_ATIVA,
-            "conversao": CONVERSAO_ATIVA,
-        },
-        "ollama": {
-            "de_pe": ollama.esta_de_pe(),
-            "carregados": ollama.modelos_carregados(),
-        },
     }
+
+    try:
+        ocupacao = ARBITRO.ocupacao
+    except Exception as erro:
+        logger.exception("Falha ao ler a ocupacao para o /health/")
+        ocupacao = None
+        corpo["arbitro"] = {"erro": f"{type(erro).__name__}: {erro}"}
+
+    corpo["ocupada"] = ocupacao is not None
+    corpo["ocupante"] = ocupacao.tarefa if ocupacao else None
+    # Qual modelo esta em uso agora. Quem planeja um lote le isto junto com
+    # `ollama.carregados` para escolher pedidos que nao paguem troca.
+    corpo["modelo"] = ocupacao.modelo if ocupacao else None
+    corpo["ha_segundos"] = ocupacao.ha_quantos_segundos if ocupacao else 0
+    corpo["rotas"] = {
+        "texto": True,
+        "imagem": IMAGEM_ATIVA,
+        "imagem_edicao": IMAGEM_ATIVA and IMAGEM_EDICAO_ATIVA,
+        "conversao": CONVERSAO_ATIVA,
+        "transcricao": TRANSCRICAO_ATIVA,
+        "vetorizacao": VETORIZACAO_ATIVA,
+        "youtube": YOUTUBE_ATIVA,
+        "animacao": ANIMACAO_ATIVA,
+        "voz": VOZ_ATIVA,
+        "conversao_de_voz": VOZ_ATIVA and VOZ_CONVERSAO,
+    }
+    # Memoria DESTE processo, e nao do sistema. E o campo que faltava: nesta
+    # maquina quem foi para o swap foi o worker, nao o Ollama, e a suspeita
+    # caiu no lugar errado por dias porque nada aqui dizia isso. O worker
+    # retem RAM por desenho (`enable_model_cpu_offload`), entao o numero
+    # precisa estar visivel.
+    corpo["memoria"] = _bloco("memoria", recursos.memoria)
+    corpo["ollama"] = _bloco("ollama", _bloco_do_ollama)
+
     if IMAGEM_ATIVA:
-        corpo["imagem"] = imagem.estado()
+        corpo["imagem"] = _bloco("imagem", imagem.estado)
     if CONVERSAO_ATIVA:
-        corpo["conversao"] = conversao.estado()
+        corpo["conversao"] = _bloco("conversao", conversao.estado)
+    if TRANSCRICAO_ATIVA:
+        corpo["transcricao"] = _bloco("transcricao", transcricao.estado)
+    if VETORIZACAO_ATIVA:
+        corpo["vetorizacao"] = _bloco("vetorizacao", vetorizacao.estado)
+    if ANIMACAO_ATIVA:
+        corpo["animacao"] = _bloco("animacao", animacao.estado)
+    if VOZ_ATIVA:
+        corpo["voz"] = _bloco("voz", voz.estado)
 
     return corpo

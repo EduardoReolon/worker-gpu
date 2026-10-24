@@ -9,6 +9,7 @@ fazem, uma vez, em vez de cada arquivo inventar o seu jeito.
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import sys
 from pathlib import Path
 
@@ -19,6 +20,17 @@ if str(RAIZ) not in sys.path:
     sys.path.insert(0, str(RAIZ))
 
 SEGREDO = "segredo-de-teste"
+
+# O `faster-whisper` de verdade arrasta o CTranslate2, que nao entra na suite
+# (como o torch). A subida do app confere que ele esta instalado; este modulo
+# de mentira satisfaz a conferencia, e os testes substituem `transcrever`.
+if importlib.util.find_spec("faster_whisper") is None:
+    import importlib.machinery
+    import types
+
+    _falso = types.ModuleType("faster_whisper")
+    _falso.__spec__ = importlib.machinery.ModuleSpec("faster_whisper", None)
+    sys.modules["faster_whisper"] = _falso
 
 
 @pytest.fixture
@@ -35,6 +47,10 @@ def ambiente(monkeypatch):
     # O Ollama nao existe nos testes; quem precisa dele substitui.
     monkeypatch.setenv("OLLAMA_DESCARREGAR_PARA_IMAGEM", "nao")
     monkeypatch.setenv("ESPERA_PELO_LOCK", "0")
+    # Desligado por padrao: nenhum teste quer baixar gigabytes, e um pedido de
+    # modelo ausente viraria 503 `baixando_modelo` em vez do que o teste mede.
+    # Quem exercita o download liga de volta.
+    monkeypatch.setenv("BAIXAR_MODELO_AUTOMATICO", "nao")
 
 
 def _recarregar(*nomes: str):
@@ -48,7 +64,25 @@ def _recarregar(*nomes: str):
 @pytest.fixture
 def worker(ambiente):
     """O app inteiro, recarregado com o ambiente do teste."""
-    modulos = _recarregar("ollama", "texto", "imagem", "conversao", "app")
+    # `modelos` depois de `ollama` e antes de `texto`: ele le `ollama` e e lido
+    # por `texto`. Recarregar fora de ordem deixaria `texto` apontando para um
+    # `modelos` velho, com o cache de modelos no disco de outro teste dentro.
+    modulos = _recarregar(
+        "ollama",
+        "contexto",
+        "modelos",
+        "texto",
+        "prazo",
+        "imagem",
+        "edicao",
+        "conversao",
+        "transcricao",
+        "vetorizacao",
+        "youtube",
+        "animacao",
+        "voz",
+        "app",
+    )
     return modulos["app"]
 
 

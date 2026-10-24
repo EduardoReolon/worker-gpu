@@ -41,9 +41,18 @@ curl -s -H "Authorization: Bearer $SEGREDO" -H 'Content-Type: application/json' 
   $WORKER/v1/chat/completions | jq -r '.choices[0].message.content'
 ```
 
+**Confira que o `$SEGREDO` não está vazio antes de testar.** Uma variável de
+shell vazia não dá erro: o `curl` manda `Authorization: Bearer ` e o worker
+responde `401` com toda a razão — e você vai procurar defeito no worker. Um
+`grep` num caminho de `.env` errado é a causa mais comum:
+
+```bash
+[[ -n "$SEGREDO" ]] && echo "segredo com ${#SEGREDO} caracteres" || echo "VAZIO"
+```
+
 | O que veio | O que significa |
 |---|---|
-| `401` | segredo errado, ou faltou o cabeçalho |
+| `401` | segredo errado, faltou o cabeçalho, ou a sua variável está vazia |
 | `404` na rota | aquela rota está desligada (`IMAGEM_ATIVA`/`CONVERSAO_ATIVA`) |
 | `503` | está funcionando — a placa só está ocupada agora |
 | nada, e o curl expira | o worker não está escutando nesse endereço |
@@ -73,17 +82,70 @@ Retry-After: 40
 
 Quatro códigos, e eles pedem coisas diferentes:
 
-| `error.code` | Significa | O que fazer |
-|---|---|---|
-| `gpu_ocupada` | outro trabalho está na placa | reagendar para daqui a `Retry-After` |
-| `ollama_indisponivel` | o Ollama caiu ou reinicia | idem; se persistir por horas, alertar |
-| `sem_vram` | a placa não tem espaço agora | idem, com paciência maior |
-| `timeout` | o trabalho passou do orçamento | **não repita igual** — reduza o pedido |
+| `error.code` | Significa | `Retry-After` | O que fazer |
+|---|---|---|---|
+| `gpu_ocupada` | outro trabalho está na placa | sim | reagendar para daqui a `Retry-After` |
+| `ollama_indisponivel` | o Ollama caiu, reinicia, ou respondeu 5xx | sim | idem; se persistir por horas, alertar |
+| `sem_vram` | a placa não tem espaço agora | sim | idem, com paciência maior |
+| `timeout` | o trabalho passou do orçamento | **não** | **não repita igual** — reduza o pedido |
+| `baixando_modelo` | o modelo pedido não estava no disco e está sendo baixado | sim | reagendar; o `Retry-After` vem do progresso real |
+| `modelo_carregando` | o modelo de vetorização está descendo em segundo plano (primeira vez) | sim | reagendar |
+| `bloqueado` / `youtube_indisponivel` | só na legenda do YouTube: o YouTube recusou, ou não respondeu | sim | tentar do servidor, ou reagendar |
+
+**Todo 503 que sai do worker tem `error.code`.** Não existe 503 sem código:
+mesmo um 5xx vindo do Ollama é envelopado nesta forma antes de sair. Se você
+receber um sem código, é bug do worker — abra issue.
+
+**O `timeout` vem sem `Retry-After`, de propósito.** Para esse código a
+orientação é reduzir o pedido, não voltar igual mais tarde; mandar o cabeçalho
+junto seria o contrato se contradizendo dentro da mesma resposta. Leia o
+cabeçalho com um padrão (`headers.get("Retry-After", 60)`), nunca com acesso
+direto.
+
+**Código que você não conhece: adie com teto, nunca desista.** Se um dia a
+lista crescer, um cliente que trate código desconhecido como falha definitiva
+quebra no dia do acréscimo. Trate como adiável, com teto de tentativas e log
+alto — o teto é o que impede o adiamento eterno, e ele protege você também nos
+códigos que você já conhece.
 
 **Nenhum deles é falha do seu trabalho.** Um 503 não deve consumir tentativa,
 não deve abrir disjuntor, e não deve marcar o trabalho como falho. Se o seu
 sistema conta tentativas, esse é o detalhe que mais importa: tratando 503 como
 erro, alguns minutos de disputa esgotam as tentativas de uma fila inteira.
+
+## O contrato do 500: o worker quebrou
+
+O 503 diz "não é a hora". O **500 com `error.code`** diz o contrário: **o
+worker quebrou**, e esperar não resolve.
+
+```http
+HTTP/1.1 500 Internal Server Error
+
+{"error": {"code": "worker_travado",
+           "message": "o trabalho de imagem passou de 900s (IMAGEM_TEMPO_TRAVADO) ..."}}
+```
+
+| `error.code` | Significa | O que fazer |
+|---|---|---|
+| `worker_travado` | um trabalho de imagem passou do prazo duro (`imagem.tempo_travado`) sem terminar nem falhar. O worker **se encerra** logo depois de responder, e o systemd sobe outro em ~10 s | **marcar o trabalho como falho**, não repetir automaticamente, e alertar quem cuida da máquina |
+
+**Isto é falha, e precisa aparecer como falha.** Não adie, não conte como
+503, e nunca marque o trabalho como concluído. É um defeito do worker (quase
+sempre memória na máquina da placa), que alguém precisa consertar. Repetir
+sozinho só repete a falha e prende a placa de novo.
+
+### Conexão cortada no meio: também é falha
+
+Se a conexão cai **depois** de o pedido ter sido aceito — `ConnectionError`,
+`RemoteDisconnected`, resposta vazia —, o processo do worker **morreu no meio
+do seu trabalho**. Na prática é o `MemoryMax`: o kernel mata o worker por
+memória, o systemd o sobe de novo em 10 s, e ninguém consegue te responder.
+
+Trate igual ao 500: **trabalho falho, com log alto**. O motivo de não adiar é
+que o mesmo pedido tende a matar o worker de novo.
+
+Conexão **recusada** antes de enviar (`ConnectionRefusedError`, o worker fora
+do ar ou reiniciando) é diferente: nada rodou. Essa adia, com teto.
 
 ### Por que 503 e não uma fila no worker
 
@@ -106,9 +168,12 @@ Se o seu sistema tem orquestrador com passos, o padrão é este — separar
 "adiar" de "falhar":
 
 ```python
-resposta = requests.post(f"{WORKER}/v1/chat/completions", json=corpo,
-                         headers={"Authorization": f"Bearer {SEGREDO}"},
-                         timeout=600)
+resposta = requests.post(
+    f"{WORKER}/v1/chat/completions",
+    json=corpo,
+    headers={"Authorization": f"Bearer {SEGREDO}"},
+    timeout=600,
+)
 
 if resposta.status_code == 503:
     dados = resposta.json().get("error", {})
@@ -118,11 +183,38 @@ if resposta.status_code == 503:
         # Repetir igual daria o mesmo resultado. Reduza antes.
         raise TrabalhoPrecisaDeAjuste(dados.get("message", ""))
 
+    if adiamentos >= TETO_DE_ADIAMENTOS:
+        # O teto e o que impede o adiamento eterno. Sem ele, um Ollama fora do
+        # ar por dias mantem o trabalho girando na fila para sempre.
+        raise TrabalhoFalhou(f"{adiamentos} adiamentos por {dados.get('code')}")
+
     # Adiar NAO gasta tentativa: nada deu errado, so nao era a hora.
     raise Adiar(dados.get("message", ""), tentar_em_segundos=espera)
 
+if resposta.status_code == 500:
+    # O worker quebrou. Esperar nao resolve, e repetir so repete a falha.
+    dados = resposta.json().get("error", {})
+    raise TrabalhoFalhou(f"worker: {dados.get('code')}: {dados.get('message', '')}")
+
+if resposta.status_code in (400, 404, 422):
+    # Isto e "seu pedido esta errado". Repetir nao muda nada.
+    raise TrabalhoFalhou(resposta.text[:300])
+
 resposta.raise_for_status()
 ```
+
+Três detalhes que decidem se isso funciona sob carga:
+
+- **o teto de adiamentos não é opcional.** `Retry-After` chega a ser 5 s, e uma
+  geração longa de outro cliente produz dezenas de 503 seguidos. Sem teto, um
+  pedido que nunca vai caber gira para sempre;
+- **respeite o `Retry-After` como piso, não como valor final.** Um recuo
+  próprio por cima (`max(retry_after, 5 * 2 ** adiamentos)`, limitado) evita
+  bater na porta a cada 5 s durante uma geração de minutos;
+- **conexão recusada é adiável; conexão cortada no meio não.** Recusada, o
+  worker estava fora do ar e nada rodou: conte no mesmo teto. Cortada depois
+  de aceita, ele morreu no meio do seu trabalho: é falha (veja **O contrato
+  do 500**).
 
 Se o seu sistema não tem orquestrador, o mínimo aceitável é reagendar a tarefa
 para `agora + Retry-After` e sair — **nunca** um `sleep` segurando o processo:
@@ -136,11 +228,199 @@ intacto — o `model` que você mandar é o que roda. Um CRM com modelo por tena
 e um padrão de sistema funciona sem nada especial aqui: o worker arbitra a
 placa, não a escolha.
 
-Dois limites honestos: o modelo precisa existir no Ollama da máquina
-(`GET /v1/models` lista), e trocar de modelo **custa**. Com
+Um limite honesto: trocar de modelo **custa**. Com
 `OLLAMA_MAX_LOADED_MODELS=1` — a configuração recomendada numa placa só — um
 modelo diferente expulsa o que estava carregado. Não é falha, é tempo: o
 próximo pedido espera o carregamento.
+
+### Modelo que ainda não está na máquina
+
+**Não precisa pré-baixar.** Se você pedir um modelo que não está no disco, o
+worker o baixa sozinho, em segundo plano, e te responde:
+
+```http
+HTTP/1.1 503 Service Unavailable
+Retry-After: 240
+
+{"error": {"code": "baixando_modelo",
+           "message": "o modelo 'llama3.1:8b' esta sendo baixado (37%)"}}
+```
+
+Você reagenda como em qualquer 503. Os pedidos seguintes recebem o mesmo
+código com o progresso atualizado, e o `Retry-After` **encolhe conforme o
+download anda** — ele é calculado do ritmo real, não é constante. Quando
+termina, o próximo pedido passa normalmente.
+
+**O download não toma a placa.** Ele é rede e disco: a rota de imagem e a de
+conversão seguem funcionando durante ele, e `ocupada` continua `false` no
+`/health/`. Quem quiser acompanhar:
+
+```bash
+curl -s http://<worker>:8090/health/ | jq '.ollama.baixando'
+# [{"modelo": "llama3.1:8b", "porcento": 37.4, "ha_segundos": 95}]
+```
+
+#### Se o download falhar, você recebe 404 — e deve desistir
+
+Essa é a parte que importa para a sua fila. Um nome de modelo que não existe
+no registro do Ollama **não** vira 503 eterno:
+
+| Quando | Você recebe | O que fazer |
+|---|---|---|
+| primeiro pedido, modelo ausente | `503 baixando_modelo` | reagendar |
+| enquanto baixa | `503 baixando_modelo` | reagendar |
+| o download falhou | **`404`**, com a mensagem da falha | **falhar o trabalho** — o nome está errado, ou a máquina não alcança o registro |
+| baixou | `200` | nada |
+
+O worker lembra a falha por alguns minutos justamente para o seu cliente
+receber um 404 em vez de disparar um download novo a cada retentativa. Passado
+esse prazo ele tenta de novo sozinho, então uma queda de rede se cura sem
+ninguém reiniciar nada.
+
+#### O que isso custa
+
+Gigabytes de disco, sem ninguém aprovar. **Um nome de modelo errado que por
+acaso exista no registro do Ollama vai ser baixado.** Se a sua lista de
+modelos vem de um banco onde alguém digita o nome, esse é o risco real —
+confira os nomes contra `GET /v1/models` quando cadastrar, não quando usar.
+
+O dono da máquina desliga isso com `BAIXAR_MODELO_AUTOMATICO=nao` no `.env`, e
+aí o comportamento volta a ser o antigo: o Ollama responde 404 na hora.
+
+### A janela de contexto, por pedido
+
+**O jeito preferido: diga quanto o pedido precisa no cabeçalho.**
+
+```http
+POST /v1/chat/completions
+X-PubliBot-Contexto: 16384
+```
+
+O valor é a janela, em tokens, que este pedido precisa (prompt + resposta). O
+worker decide o `num_ctx` assim:
+
+1. **o seu pedido**: o cabeçalho, ou `options.num_ctx` se for maior. Sem
+   nenhum dos dois (ou com um valor inválido), vale o padrão da máquina,
+   `ollama.contexto.padrao` no `/health/` (16384);
+2. **nunca menor que a já usada** para aquele modelo: cada troca de `num_ctx`
+   faz o Ollama **recarregar** o modelo, e um pedido pequeno depois de um
+   grande reaproveita a carga;
+3. **nunca maior que o teto da máquina**, `ollama.contexto.maximo` (32768).
+   Acima da VRAM o Ollama não recusa: põe camadas na CPU e fica muitas vezes
+   mais lento.
+
+Isso vale para **todo** pedido de texto, com ou sem cabeçalho: dois clientes no
+mesmo modelo com janelas diferentes fariam o Ollama recarregar a cada
+alternância.
+
+**Se o pedido não couber nem no teto**, a resposta é `400` na forma do
+llama.cpp, e a mensagem original vai junto:
+
+```json
+{"error": {"code": 400, "type": "exceed_context_size_error",
+           "message": "request (40000 tokens) exceeds the available context size (32768 tokens)",
+           "n_prompt_tokens": 40000, "n_ctx": 32768}}
+```
+
+Isso é falha do pedido, não da hora: reduza o pedido; repetir igual dá o mesmo
+400.
+
+O `/health/` declara o arranjo em `ollama.contexto`:
+
+```json
+{"padrao": 16384, "atual": 16384, "maximo": 32768, "segue_cabecalho": true}
+```
+
+`atual` é a janela do modelo carregado agora (0 se nenhum), lida do Ollama.
+
+**Também funciona: mande `options.num_ctx` no corpo.**
+
+```json
+{"model": "qwen2.5:7b-instruct",
+ "messages": [{"role": "system", "content": "..."},
+              {"role": "user", "content": "..."}],
+ "options": {"num_ctx": 16384},
+ "max_tokens": 800}
+```
+
+Não é o dialeto da OpenAI — é o do Ollama, e é de propósito. Um pedido com
+`options` (ou `keep_alive`) vai pelo `/api/chat` do Ollama, onde esses campos
+existem — e, com a janela decidida pelo worker, isso é praticamente todo
+pedido. A **resposta é a mesma pelos dois caminhos** — você não precisa saber qual caminho o seu pedido tomou, e um teste do
+worker garante que as duas formas não divergem.
+
+Por que isso não era assim antes: a camada compatível do Ollama desserializa o
+corpo num struct tipado e **descarta chave que não conhece, sem erro e sem
+log**. `options` inteiro caía nessa. Um pedido com `num_ctx: 16384` respondia
+200 tendo rodado com 4096.
+
+| Você manda | Vale | Observação |
+|---|---|---|
+| `options.num_ctx` | **sim** | leva o pedido pelo dialeto nativo |
+| `options.num_predict` | **sim** | ou use `max_tokens`, que é equivalente |
+| `options.*` (qualquer opção do Ollama) | **sim** | repassado como está |
+| `keep_alive` | **sim** | leva o pedido pelo dialeto nativo |
+| `max_tokens`, `temperature`, `top_p`, `seed`, `stop` | **sim** | nos dois caminhos |
+| `response_format` (inclusive `json_schema`) | **sim** | nos dois caminhos |
+| `n` maior que 1 | **não** | o Ollama gera uma resposta por pedido; vira aviso no journal do worker |
+
+**Se você mandar `options` e um campo equivalente da OpenAI, o `options`
+ganha** — ele é a intenção mais específica. `max_tokens: 100` junto de
+`options: {"num_predict": 500}` roda com 500.
+
+**Campo que o worker não sabe traduzir vira AVISO no journal dele**, nunca
+silêncio. Se você suspeitar que algo não está chegando, peça ao dono da máquina:
+
+```bash
+journalctl --user -u worker-gpu -f | grep dialeto
+```
+
+#### Não precisa mais de Modelfile
+
+A recomendação anterior era embutir a janela no modelo com
+`PARAMETER num_ctx` e um `ollama create`. Ela **continua funcionando**, mas
+deixou de ser necessária, e a razão de ter saído de cena é prática: alguém
+precisava rodar o `ollama create` a cada máquina nova, e **esquecer não dava
+erro nenhum** — voltava a janela padrão, em silêncio. Se você já criou modelos
+derivados, eles seguem valendo; se não criou, não crie.
+
+#### Um custo real que aparece agora
+
+Com o `num_ctx` passando a valer de verdade, ele passa a **custar VRAM**. A
+cache de atenção de 16k tokens num modelo de 7B não é de graça, e numa placa de
+8 GB pode ser a diferença entre caber e o Ollama espalhar camadas para a CPU —
+o que não dá erro, só fica muitas vezes mais lento.
+
+Se o tempo de resposta piorar depois de você subir a janela, é isso. Confira:
+
+```bash
+curl -s http://<worker>:8090/health/ \
+  | jq '.ollama.carregados_detalhe[] | {name, context_length, size_vram}'
+```
+
+Peça a janela que você precisa, não a maior que couber.
+
+### Como detectar truncamento
+
+Janela pequena demais não dá erro: ela **come o prompt pelo início**, e o
+primeiro a morrer é o prompt de sistema. A resposta volta 200, com JSON válido
+e schema respeitado, e o modelo não viu as suas instruções. É o defeito que
+passa por revisão automatizada e envenena tudo o que for construído em cima.
+
+Três sinais, do mais barato para o mais caro:
+
+| Sinal | Custo | O que prova |
+|---|---|---|
+| `usage.prompt_tokens` vs. o que você mandou | nada | truncou, se vier muito abaixo — e travado num número redondo (2048, 4096) é conclusivo |
+| `finish_reason == "length"` | nada | a **saída** foi cortada pelo `max_tokens`, não a entrada |
+| `ollama.carregados_detalhe[].context_length` no `/health/` | uma viagem | com que janela o modelo **está** carregado |
+| um canário no início do prompt de sistema, ecoado na saída | um campo no schema | se o início do prompt sobreviveu, **neste pedido** |
+
+O primeiro é o que a maioria deveria usar: já está na resposta, não custa nada
+e não pede campo novo. O segundo é diagnóstico de **máquina** ("está
+configurada errada"), e não confirmação de pedido — ele é lido por outra
+viagem, depois, e entre a sua inferência e a sua leitura outro cliente pode ter
+recarregado o modelo com outra janela.
 
 ### Como saber o que está na placa
 
@@ -151,6 +431,7 @@ Três formas, da mais barata para a mais cara:
 | um **200** seu | o seu modelo é o que está carregado agora | nada |
 | o **503** que você levou | `error.modelo` — o que está em uso | nada |
 | `GET /health/` | `modelo` (em uso) e `ollama.carregados` (residentes) | uma viagem |
+| `GET /health/` | `ollama.carregados_detalhe` — com **`context_length`** | a mesma viagem |
 
 A primeira é a que se esquece: depois de uma resposta bem-sucedida, você já
 sabe. Não precisa perguntar.
@@ -200,12 +481,23 @@ o `arbitro.py` diz explicitamente que hoje ele não faz nada disso.
 
 ## Timeouts do seu lado
 
-| Rota | Timeout sugerido |
-|---|---|
-| `/v1/chat/completions` | 600 s |
-| `/v1/images/generations` | 300 s |
-| `/parse/` | 600 s |
-| `/health/` | 10 s |
+| Rota | Timeout sugerido | Orçamento do worker |
+|---|---|---|
+| `/v1/chat/completions` | 600 s | `OLLAMA_TIMEOUT`, 540 s |
+| `/v1/images/generations` | 960 s | `IMAGEM_TEMPO_TRAVADO`, 900 s (a geração em si: `IMAGEM_TEMPO_MAXIMO`, 600 s) |
+| `/v1/audio/transcriptions` | 1800 s | `TRANSCRICAO_TEMPO_TRAVADO`, 1500 s (o áudio em si: `TRANSCRICAO_TEMPO_MAXIMO`, 1200 s) |
+| `/v1/embeddings` | 600 s | `VETORIZACAO_TEMPO_TRAVADO`, 300 s |
+| `/v1/youtube/legenda` | 120 s | `YOUTUBE_TIMEOUT`, 30 s por ida ao YouTube (são duas) |
+| `/parse/` | 600 s | sem teto |
+| `/health/` | 10 s | — |
+
+**O seu timeout precisa ser MAIOR que o orçamento do worker, e não igual.** Os
+dois relógios não começam juntos: o seu parte quando você envia, o do worker só
+depois de o pedido chegar, passar pela credencial e tomar o lock. Iguais, quem
+desiste primeiro é você — e você abandona um trabalho que ainda está segurando
+a placa, de modo que a sua retentativa imediata bate num serviço ocupado. Com
+540 s do lado do worker e 600 s do seu, quem desiste primeiro é ele, e ele
+desiste devolvendo um 503 legível em vez de um socket cortado.
 
 São generosos de propósito: o worker pode estar carregando um modelo (dezenas
 de segundos) antes de começar. Um timeout curto desiste de um trabalho que
@@ -242,20 +534,268 @@ cliente termina de ler.
 POST /v1/images/generations
 Authorization: Bearer <segredo>
 
-{"prompt": "...", "n": 3, "size": "1024x576"}
+{"prompt": "...", "n": 3, "size": "1344x768",
+ "negative_prompt": "blurry, watermark"}
 ```
 
 Resposta: `contrato/imagem-resposta.json`. Sempre `b64_json` — um link
 temporário expiraria antes de você publicar a imagem.
 
-Cada lado do `size` precisa ser múltiplo de 8. Não é capricho: o modelo
-arredonda por dentro e devolveria uma imagem de tamanho diferente do pedido,
-sem avisar.
+`negative_prompt` é **opcional e seu**: o worker não tem negativo próprio e
+repassa o que você mandar, como veio. Ele já teve um padrão aplicado a todo
+pedido ("text, letters, words, ..."), e isso brigava com quem pedia texto na
+imagem. Modelos destilados (Z-Image-Turbo, FLUX schnell) rodam com guidance 0
+e ignoram o negativo — veja `imagem.modelo` e `imagem.guidance` no `/health/`.
+
+Cada lado do `size` precisa ser múltiplo de 16. Não é capricho: o espaço
+latente é 8× menor, e os modelos de transformer ainda o agrupam em blocos de
+2×2. Toda a grade do SDXL abaixo já é múltipla de 64.
 
 O tamanho quase não muda o tempo (veja o README): o custo é dominado por mover
 pesos entre RAM e VRAM. Peça o tamanho que você quer publicar.
 
-### Conversão de PDF (Docling)
+#### O tamanho: use a grade de treino
+
+O SDXL não foi treinado em tamanhos livres. Ele foi treinado numa **grade de
+proporções a área constante** — todas em torno de 1,05 megapixel. Pedir fora
+dela não dá erro: dá assunto duplicado, geometria torta e composição
+incoerente.
+
+As que interessam para publicação:
+
+| Tamanho | Proporção | Para quê |
+|---|---|---|
+| `1024x1024` | 1:1 | feed quadrado |
+| `1152x896` | 1.29:1 | |
+| `1216x832` | 1.46:1 | |
+| `1344x768` | 1.75:1 | **capa / `og:image`** |
+| `1344x704` | 1.91:1 | o mais perto do `1200x630` das redes |
+| `1536x640` | 2.4:1 | faixa larga |
+
+A lista completa (~40 entradas, incluindo as em pé) está em
+`imagem.grade` no `/health/`. **Valide contra ela, não contra uma cópia sua** —
+uma cópia envelhece e ninguém percebe.
+
+Três limites, e eles não são o mesmo:
+
+- **cada lado múltiplo de 16** → senão `422`. É por isso que o `1200x630`
+  clássico de `og:image` **não passa**: 630 não é múltiplo de 16. Use `1344x704`;
+- **lado ≤ 1536** (`imagem.lado_maximo`) → senão `422`;
+- **área ≤ 1,2 MP** (`imagem.area_maxima_mp`) → senão `422`, com o tamanho da
+  grade mais próximo na mensagem. Existe porque o teto por lado sozinho
+  deixaria passar `1536x1536`, que é o dobro da área de treino.
+
+Fora da grade mas dentro dos três limites **passa**, e vira aviso no journal do
+worker em vez de recusa — quem pede assim costuma ter motivo. Mas saiba que
+está pagando por isso.
+
+E como o tamanho quase não muda o tempo (está medido no README: 4× mais pixels
+por 23% mais tempo), **pedir menos nunca economizou nada**.
+
+**O prompt precisa estar em inglês.** Os codificadores de texto do SDXL foram
+treinados em legendas da web, esmagadoramente inglesas: um prompt em português
+não dá erro, gera uma imagem a partir do pouco sinal que sobrou, e o resultado
+é genérico e mal composto. O worker **não traduz** — traduzir em silêncio
+mudaria o seu pedido —, mas registra um aviso no journal quando detecta
+português. Se você gera o prompt com um LLM, peça a ele em inglês.
+
+### Imagem com referência e foto na cena (`/v1/images/edits`)
+
+O dialeto de edição da OpenAI, com dois campos a mais: os personagens de
+referência.
+
+```http
+POST /v1/images/edits
+Content-Type: multipart/form-data
+
+prompt=<o primeiro quadro, em inglês>
+size=720x1280
+n=1
+negative_prompt=<opcional>
+seed=<opcional>
+image=<PNG base, opcional>
+mask=<PNG máscara, com alfa, do tamanho da base>
+reference_image=<PNG>          (repetível, até 3: os personagens)
+reference_strength=0.60        (0 a 1, só com reference_image)
+```
+
+**`200`:** igual ao `/v1/images/generations`, `{"data": [{"b64_json": "..."}]}`
+(`contrato/imagem-edicao-resposta.json`), e `avisos` quando algo pedido não
+foi feito.
+
+| Campos | O que o worker faz |
+|---|---|
+| `reference_image` (sem `image`) | gera do zero pelo `prompt`, puxando a aparência das referências |
+| `image` + `mask` (+ referências) | **pinta só a parte transparente** da máscara; a parte opaca volta **idêntica**, pixel a pixel |
+| `image` sem `mask` | `422`: não suportado |
+
+**A máscara:** transparente (alfa 0) = pintar; opaco = manter, como na OpenAI.
+Sem canal alfa, ou de tamanho diferente da `image`, volta `422`. Pintar passa a
+imagem inteira pelo VAE, que altera de leve até o que devia ficar; por isso o
+worker **cola de volta** os pixels da parte opaca depois de gerar — a foto da
+janela sai exatamente como foi mandada.
+
+**Dois modelos, escolhidos pelo pedido:**
+
+- **sem `reference_image`**: o modelo principal (`imagem.modelo` no
+  `/health/`), o de mais qualidade — hoje o Z-Image, que também pinta a
+  máscara com os mesmos pesos;
+- **com `reference_image`**: o modelo de referência (`imagem.referencia.modelo`,
+  padrão RealVisXL V5) com **IP-Adapter Plus**. O Z-Image não aceita
+  IP-Adapter: ele só existe para o SDXL e família.
+
+**A referência entra só na aparência** (InstantStyle,
+`imagem.referencia.camadas: "aparencia"`): o personagem chega com a cor, a
+roupa e o jeito dele, mas a pose e o enquadramento seguem o `prompt`, em vez de
+copiar os da foto de referência. O rosto pode sair menos parecido que com a
+referência em todas as camadas (`todas`, configuração da máquina).
+
+Só um fica carregado por vez (placa de 8 GB): **alternar entre cenas com e sem
+personagem custa uma recarga** (1 a 2 minutos). Se puder, agrupe as cenas com
+personagem. `imagem.carregado_perfil` diz qual está carregado agora.
+
+Com o modelo de referência desligado na máquina (`imagem.referencia.modelo:
+null`), as referências são ignoradas e a resposta traz `avisos` dizendo isso —
+a cena sai só pela descrição.
+
+**Erros:** os do `/generations` (`503 gpu_ocupada`/`sem_vram`/`timeout`; `500`
+com `error.code`: `worker_travado`, `falha_na_edicao`) e `422`
+(`pedido_invalido`, `tamanho_invalido`) com `error.message`. `404`/`405`:
+worker sem a rota.
+
+### Transcrição de áudio (Whisper)
+
+```http
+POST /v1/audio/transcriptions
+Authorization: Bearer <segredo>
+Content-Type: multipart/form-data
+
+file=<o áudio>   model=whisper   language=pt   response_format=verbose_json
+```
+
+```json
+{"task": "transcribe",
+ "language": "pt",
+ "duration": 812.4,
+ "text": "Olá. Hoje vamos falar de BDI.",
+ "segments": [{"id": 0, "start": 0.0, "end": 4.2, "text": "Olá."},
+              {"id": 1, "start": 4.2, "end": 9.8, "text": "Hoje vamos falar de BDI."}]}
+```
+
+Exemplo completo em `contrato/transcricao-resposta.json`. É o dialeto da
+OpenAI, com o `faster-whisper` por trás.
+
+- **`file`**: qualquer áudio ou vídeo que o ffmpeg leia (`.mp3 .m4a .wav .ogg
+  .oga .opus .webm .mp4 .flac` e outros). O ffmpeg vem embutido; o formato é
+  descoberto pelo conteúdo, não pela extensão. Teto em `transcricao.max_bytes`
+  (1 GB), acima dele `413 arquivo_grande`;
+- **`model`**: aceito e **ignorado**. O modelo é o da máquina
+  (`transcricao.modelo` no `/health/`), como na imagem;
+- **`language`**: ISO de duas letras. Vazio, o Whisper detecta e devolve o que
+  detectou em `language`. Mandar quando se sabe melhora o começo do áudio;
+- **`prompt`**: opcional. Vira o contexto inicial do Whisper — útil para
+  siglas e nomes próprios que ele erraria (`"BDI, SINAPI, TCPO"`);
+- **`response_format`**: `verbose_json` (acima), `json` (só `{"text"}`) ou
+  `text` (texto puro). Outro valor volta `422`.
+
+`duration` é a duração do **áudio**, em segundos. `segments` vem em ordem;
+trechos de silêncio longo não geram segmento, porque o filtro de voz (VAD) os
+pula antes de transcrever — é também o que evita o Whisper inventar frases em
+trechos mudos.
+
+**Erros**, no contrato de sempre:
+
+| Situação | Resposta |
+|---|---|
+| placa ocupada | `503 gpu_ocupada`, com `Retry-After` — adie |
+| sem VRAM | `503 sem_vram`, com `Retry-After` — adie |
+| áudio longo demais para o teto | `503 timeout`, **sem** `Retry-After` — falha; o mesmo áudio daria o mesmo resultado |
+| travado | `500 worker_travado` — falha, e o worker se reinicia |
+| outra falha do worker | `500 falha_na_transcricao` — falha |
+| não é áudio legível, vazio, ou `response_format` errado | `422 arquivo_invalido`, com `error.message` |
+| grande demais | `413 arquivo_grande`, com `error.message` |
+
+Os 4xx desta rota trazem `error.message` **e** `detail`: leia qualquer um.
+
+### Vetorização (embeddings)
+
+```http
+POST /v1/embeddings
+Authorization: Bearer <segredo>
+
+{"model": "intfloat/multilingual-e5-large",
+ "input": ["passage: texto do paragrafo 1", "passage: texto do paragrafo 2"]}
+```
+
+```json
+{"object": "list",
+ "model": "intfloat/multilingual-e5-large",
+ "data": [{"object": "embedding", "index": 0, "embedding": [0.0123, -0.0456, ...]}],
+ "usage": {"prompt_tokens": 42, "total_tokens": 42}}
+```
+
+Exemplo em `contrato/vetorizacao-resposta.json`. Dialeto da OpenAI.
+
+- **`model` é conferido.** Tem que ser o da máquina (`vetorizacao.modelo` no
+  `/health/`); outro volta `422 modelo_errado`. Vetor de outro modelo no mesmo
+  índice estraga a busca sem aviso;
+- **`input` vai ao modelo como veio.** O prefixo `passage: ` que o e5 exige é
+  seu; o worker não acrescenta nada. Um texto solto (string) também vale;
+- **o vetor sai igual ao do `fastembed==0.8.0`**: mean pooling sobre a última
+  camada, **sem normalizar**, truncando em 512 tokens, em float32. Normalize
+  do seu lado se o seu índice precisa. Confira antes de ligar:
+  `./venv/bin/python conferir_vetorizacao.py --servidor vetor.json` na máquina
+  do worker (cosseno ≥ 0,999);
+- **primeira vez:** o modelo (~2 GB) desce em segundo plano e a resposta é
+  `503 modelo_carregando` com `Retry-After: 60`. Adie — não falhe e não apague
+  o índice antigo. Todos os pedidos no meio recebem o mesmo 503, e o download
+  é um só. Um download que falhou é lembrado por `FALHA_DE_DOWNLOAD_LEMBRADA`
+  (o `Retry-After` diz quando ele tenta de novo);
+- **o Ollama só é descarregado se faltar VRAM** (`descarregar_ollama:
+  se_faltar`): vetorizar leva segundos, e recarregar um modelo de texto grande
+  leva dezenas deles.
+
+| Situação | Resposta |
+|---|---|
+| modelo descendo | `503 modelo_carregando`, com `Retry-After` — adie |
+| placa ocupada / sem VRAM | `503 gpu_ocupada` / `sem_vram`, com `Retry-After` — adie |
+| outro `model`, `input` vazio, textos demais | `422 modelo_errado` / `entrada_invalida`, com `error.message` |
+| travado / outra falha | `500 worker_travado` / `falha_na_vetorizacao` — falha |
+
+### Legenda do YouTube
+
+```http
+POST /v1/youtube/legenda
+Authorization: Bearer <segredo>
+
+{"video_id": "dQw4w9WgXcQ", "idiomas": ["pt", "pt-BR", "en"]}
+```
+
+```json
+{"video_id": "dQw4w9WgXcQ",
+ "idioma": "pt",
+ "gerada_automaticamente": true,
+ "segmentos": [{"start": 0.0, "duration": 4.2, "text": "Olá."}]}
+```
+
+Exemplo em `contrato/youtube-legenda-resposta.json`. **Não usa a placa** —
+nunca leva `gpu_ocupada`. Existe porque o YouTube recusa legenda para IP de
+nuvem e esta máquina está numa conexão residencial. Mesma biblioteca do
+servidor (`youtube-transcript-api` 1.x).
+
+Devolve a primeira legenda que existir na ordem de `idiomas`; dentro de cada
+idioma, a **manual antes da automática**. A ordem é sua: `pt` automática vence
+`en` manual se `pt` vem primeiro.
+
+| Situação | Resposta | O que fazer |
+|---|---|---|
+| nenhum dos idiomas; legendas desligadas; restrição de idade; vídeo não reproduzível | `404 sem_legenda` | "aguardando o áudio" |
+| o vídeo não existe ou foi removido | `404 video_indisponivel` | desistir: não há legenda nem áudio |
+| o YouTube recusou também daqui | `503 bloqueado`, `Retry-After: 3600` | tentar do servidor |
+| rede, tempo esgotado, resposta estranha | `503 youtube_indisponivel`, `Retry-After: 300` | tentar do servidor, ou adiar |
+| id que não é do YouTube | `422 video_id_invalido` | falha |
+
+### Conversão de documentos (Docling)
 
 ```http
 POST /parse/
@@ -273,6 +813,12 @@ multipart/form-data, campo `file`
 ```
 
 Exemplo completo em `contrato/conversao-resposta.json`.
+
+**Formatos: `.pdf`, `.docx`, `.pptx`, `.xlsx`**, reconhecidos pela extensão do
+nome do arquivo — mande o nome certo. Outro formato volta `422`. PDF passa pela
+análise de layout descrita abaixo; os do Office declaram a estrutura e são
+lidos direto, com mais fidelidade em tabelas e figuras que um extrator de
+texto.
 
 #### O que ele realmente faz
 
@@ -363,12 +909,273 @@ dentro de uma requisição web do seu sistema: é trabalho de fila.
   O `sha256` volta na resposta de qualquer forma — guarde-o: é como você
   descobre depois que dois documentos do acervo são o mesmo arquivo.
 
+### Animação (imagem para vídeo, FramePack)
+
+O dialeto de vídeo da OpenAI (Sora), **assíncrono**: animar leva dezenas de
+minutos.
+
+```http
+POST /v1/videos
+Content-Type: multipart/form-data
+
+prompt=The man waves at the camera.   (o movimento, em inglês, curto)
+model=framepack-fp8                   (do catálogo; outro nome usa o padrão)
+seconds=3                             (1 a ANIMACAO_SEGUNDOS_MAXIMOS)
+size=448x800                          (respeitado: veja abaixo)
+seed=4242                             (opcional: o mesmo clipe de novo)
+input_reference=<a imagem>
+```
+
+- **`size` é respeitado.** O FramePack gera no tamanho pedido, arredondado para
+  baixo em múltiplos de 32, com a imagem cortada ao centro para a proporção. Só
+  é **reduzido** (na mesma proporção) se passar do teto da máquina,
+  `ANIMACAO_RESOLUCAO`² pixels — `720x1280` vira `480x832` com o teto de 640.
+  Nunca maior que o pedido: o tempo cresce com os pixels. Sem `size`, o
+  formato da imagem na `ANIMACAO_RESOLUCAO`.
+- **`model` escolhe o modelo** do catálogo (`animacao.modelos` no
+  `/health/`): `framepack` (o original, bf16) ou `framepack-fp8` (o mesmo,
+  convertido para fp8 na memória). Um nome fora do catálogo — o `sora-2` de
+  uma conexão paga, por exemplo — usa `animacao.modelo_padrao`. O usado volta
+  em `model`. O **fp8** é bem mais rápido numa máquina com pouca RAM: o modelo
+  inteiro (~13 GB, em vez de ~26) cabe na memória e o disco sai do caminho.
+  Perde um pouco de detalhe fino: um trecho que não ficou bom pode ser refeito
+  com `framepack` e a **mesma `seed`**. Numa fila de cenas, prefira o modelo do
+  último trabalho (`animacao.ultimo.modelo`): o cache de disco já está quente.
+- **`seed` fixa o resultado:** a mesma imagem, o mesmo `prompt` e a mesma
+  `seed` dão o mesmo clipe. Sem ela o worker sorteia, e a usada volta em
+  `seed` no trabalho — guarde-a para pedir de novo um trabalho que um restart
+  perdeu.
+- **`seconds`** vira trechos de ~1,2 s do FramePack: `round(seconds / 1,2)`,
+  mínimo 1 (3 s = 2 trechos, 4 s = 3).
+
+- **`200`**: o trabalho, com `id` e `status: queued`
+  (`contrato/video-resposta.json`). A placa já foi tomada; ninguém mais
+  entra até ele terminar.
+- **Placa ocupada:** `503` com `Retry-After`, como em qualquer rota. Tente de
+  novo depois, pela sua fila.
+- **`GET /v1/videos/{id}`**: `status` (`queued`, `in_progress`, `completed`,
+  `failed`), `progress` (0–100) e, se falhou, `error.code`:
+  - `timeout`: reduza os segundos;
+  - `sem_vram`;
+  - `falha_na_animacao`.
+- **`404 nao_encontrado`**: o worker reiniciou e esqueceu o trabalho. Peça de
+  novo.
+- **`GET /v1/videos/{id}/content`**: o MP4 (`409` se ainda não está pronto).
+  Fica guardado por `ANIMACAO_GUARDAR_SEGUNDOS` (6 h).
+
+**O que se mediu numa placa de 8 GB** (704×544, TeaCache ligado):
+- cerca de **9,5 min por trecho de ~1,1 s**; 2,4 s de vídeo em uns 20 min;
+- até **7,7 GB** de VRAM, com a RAM do sistema baixa.
+
+A qualidade foi boa no personagem principal. Movimentos de figuras pequenas,
+ao fundo, quase não saem: peça movimentos grandes e claros, de quem está em
+destaque.
+
+**Instalação.** O FramePack mora num ambiente próprio, porque pede torch 2.6
+e Python 3.10. Quem instala é o próprio worker:
+
+```bash
+./deploy/instalar_animacao.sh            # clona o FramePack no commit medido, cria o venv dele
+./deploy/instalar_animacao.sh --modelos  # e ja baixa os modelos (~30 GB)
+```
+
+- O `deploy/instalar.sh` chama esse script sozinho quando o `.env` tem
+  `ANIMACAO_ATIVA=sim`. Numa máquina formatada, basta clonar o worker,
+  preencher o `.env` e rodar o `instalar.sh`.
+- As versões são fixas: o commit do FramePack e o torch 2.6 com o
+  torchvision 0.21. No torchvision mais novo, salvar o MP4 quebra no fim da
+  geração.
+- O FramePack fica em `framepack/`, dentro da pasta do worker e fora do git
+  (`.gitignore`), com o venv dele e os modelos em `framepack/hf_download`.
+
+**`.env` do worker:**
+
+```bash
+ANIMACAO_ATIVA=sim
+# FRAMEPACK_DIR=<pasta do worker>/framepack   # padrao (fora do git)
+# ANIMACAO_PYTHON=<pasta do worker>/framepack/venv/bin/python   # padrao
+# ANIMACAO_RESOLUCAO=640    # 512 ou 480: bem mais rapido; o Instagram mostra menor
+# ANIMACAO_TEACACHE=sim
+# ANIMACAO_MEMORIA_PRESERVADA=6
+# ANIMACAO_RAM_FIXA_GB=0    # GB do transformer fixados na RAM; veja abaixo
+# ANIMACAO_TEMPO_MAXIMO=3600
+```
+
+**Quando a animação fica presa no disco.** O transformer (~26 GB) é lido
+inteiro a cada passo. Sem cache para ele todo, o kernel descarta sempre o
+trecho mais antigo, que é o primeiro do passo seguinte, e o modelo inteiro
+volta do disco a cada passo: a GPU fica pela metade e o `bi` do `vmstat`, alto
+e contínuo. O FramePack roda dentro do serviço do worker, então o cache dele
+também conta no `WORKER_MEMORY_MAX`. Confira:
+
+```bash
+CG=/sys/fs/cgroup$(systemctl --user show worker-gpu -p ControlGroup --value)
+awk '$1=="anon"||$1=="file"{printf "%s: %.1f GB\n",$1,$2/1073741824}' $CG/memory.stat
+grep ^max $CG/memory.events     # subindo durante a animacao: o teto esta espremendo o cache
+```
+
+Para medir isso de uma vez e receber uma sugestão, rode durante uma animação
+`python3 afericao.py` (5 min; `--minutos 10` para mais). Ele grava em
+`medicoes/afericao-<data>.md` o relatório (GPU, disco, RAM, o que está fora do
+worker, como uma VM), a sugestão de `.env` e um prompt pronto para conversar
+com uma LLM antes de comprometer RAM.
+
+O que falta de cache é, aproximadamente, transformer (~26 GB) + memória
+própria do serviço (~5 GB) − `WORKER_MEMORY_MAX`. Só duas coisas diminuem isso:
+subir o teto (tirando RAM do resto da máquina) ou um transformer menor (em fp8,
+~13 GB). `ANIMACAO_RAM_FIXA_GB` (fixar N GB do transformer na memória do
+processo) existe, mas **não diminui a falta**: a parte fixa sai do mesmo teto
+que o cache. Medido numa máquina de 30 GB: o kernel já relia só ~9,5 GB por
+passo, e não o modelo inteiro.
+
+**Como funciona por dentro:**
+1. O worker toma a placa e solta o Ollama e os modelos residentes (imagem,
+   transcrição, vetorização).
+2. Chama `animar_framepack.py` com o Python do FramePack, como processo
+   separado.
+3. O processo carrega os modelos a cada trabalho (alguns minutos a mais) e
+   devolve toda a memória ao terminar.
+
+### Voz (texto para fala: Kokoro e Qwen3-TTS)
+
+```http
+POST /v1/audio/speech
+Content-Type: application/json
+
+{"model": "qwen", "voice": "qwen:carla", "input": "Você acorda cansado?", "response_format": "mp3"}
+```
+
+- **`200`**: o áudio (`audio/mpeg`, ou `audio/wav` se o libsndfile da máquina
+  não gravar MP3).
+- **`voice` diz o motor**, e o nome nunca se confunde com o de outro serviço:
+
+  | Voz | Motor | Onde roda |
+  |---|---|---|
+  | `pf_dora`, `pm_alex`, `pm_santa` (ou `kokoro:pf_dora`) | Kokoro | CPU, nunca espera a placa; soa sintético |
+  | `qwen:<nome>` | Qwen3-TTS | placa, pelo árbitro; bem mais natural |
+  | vazio, ou da OpenAI (`alloy`, `nova`...) | `VOZ_PADRAO` | o motor dela |
+
+- **Qualquer outra voz leva `422 voz_desconhecida`**: o id de 20 letras da
+  ElevenLabs, o `pt-BR-...` do Google, ou um `qwen:<nome>` que não existe (a
+  mensagem lista as que existem). Antes da 2.14, elas viravam a voz padrão em
+  silêncio. Quem tem mais de um serviço de voz deve passar para o próximo.
+- **`model`** é informativo; a voz é que manda.
+- **`speed`** só vale no Kokoro.
+- **Acabamento de locução** (`VOZ_ACABAMENTO`, ligado de padrão): toda fala
+  que sai, de qualquer motor e da conversão, passa pelo `ffmpeg`. Ele corta o
+  grave embolado, tira o abafado, realça a presença, suaviza os "s", comprime
+  e normaliza para -16 LUFS. Não muda o timbre. Sai em MP3, 44,1 kHz. Sem o
+  `ffmpeg`, ou se ele falhar, a fala sai como o motor gravou.
+- **`instructions`** (OpenAI) e **`previous_text` / `next_text`** (ElevenLabs)
+  são aceitos e **ignorados** nos dois motores; `voz.campos` no `/health/` diz
+  isso. O clone do Qwen (modelo Base) não tem controle por instrução: o tom
+  vem da gravação de referência (`GRAVAR_VOZ.md`). As falas vizinhas pediriam
+  gerar três falas e recortar uma sem marcas de tempo: o triplo do tempo de
+  placa por um corte incerto.
+- **Uma voz do Qwen usa a placa.** Com outro trabalho rodando (uma animação
+  leva ~25 min), ela leva `503 gpu_ocupada` com `Retry-After`, como a imagem.
+  O cliente deve reagendar a fala, e não desistir.
+- **Cada fala do Qwen carrega o modelo** (~10 a 20 s) antes de falar: espere a
+  resposta por pelo menos `VOZ_QWEN_TEMPO_MAXIMO` (300 s de padrão), e não pelos
+  120 s do Kokoro.
+- Erros:
+  - `422 pedido_invalido` para texto vazio ou longo demais;
+  - `422 voz_desconhecida`, como acima;
+  - `500 falha_na_voz` se o motor não rodar;
+  - `503 gpu_ocupada` (só o Qwen);
+  - `503 timeout` se passar do tempo máximo do motor.
+
+**As vozes:** `GET /v1/audio/voices` lista as que este worker fala
+(`contrato/vozes-resposta.json`). Uma voz do Qwen é uma pasta em
+`VOZ_VOZES_DIR` com `referencia.wav` (alguns segundos de fala) e
+`referencia.txt` (o que se diz nela). Para criar:
+
+```bash
+# Inventada a partir de uma descrição (o modelo VoiceDesign; não imita ninguém):
+./deploy/criar_voz.sh carla "mulher brasileira de 30 anos, voz calorosa e calma"
+# Clonada de uma gravação de 5 a 15 s, com o texto exato do que se diz nela:
+./deploy/criar_voz.sh eduardo --gravacao minha_voz.wav "o que eu falo na gravação"
+```
+
+O script vai pelo worker (`POST /v1/audio/voices`), espera a vez na placa e
+grava `voz/teste-<nome>.mp3` para você ouvir. Como gravar, com textos
+para cada estilo (vendas, calmo, urgente): `GRAVAR_VOZ.md`. Só clone a voz
+de quem autorizou.
+
+- **Instalação:** `./deploy/instalar_voz.sh`, ou o `instalar.sh` com
+  `VOZ_ATIVA=sim` no `.env`. Ela cria `voz/`, com o venv do Kokoro e fora do
+  git, e instala o `espeak-ng`, que é a pronúncia do português. No fim, grava
+  `voz/teste.mp3`. Com `VOZ_QWEN=sim` (ou `--qwen`), ela também cria
+  `voz/qwen/`, com o venv do Qwen, e baixa os dois modelos (~9 GB, só disco).
+
+```bash
+VOZ_ATIVA=sim
+VOZ_QWEN=sim
+VOZ_PADRAO=qwen:carla
+# VOZ_QWEN_MODELO=Qwen/Qwen3-TTS-12Hz-1.7B-Base   # ou o 0.6B: menos VRAM, imita menos
+# VOZ_QWEN_DISPOSITIVO=cuda                       # cpu: não disputa a placa, muito mais lento
+```
+
+### Conversão de voz (`/v1/audio/convert`)
+
+```http
+POST /v1/audio/convert
+Content-Type: multipart/form-data
+
+audio=<a gravação: mp3, wav, flac ou ogg>
+voice=qwen:carla
+```
+
+- **`200`**: o áudio convertido (`audio/mpeg`). As palavras, o ritmo, as
+  pausas e a entonação são os da gravação; o **timbre** passa a ser o da voz.
+- **`voice`**: uma voz `qwen:<nome>`, cuja `referencia.wav` é o alvo (o
+  conversor usa os primeiros 10 s). Vazio vira `VOZ_PADRAO`. O Kokoro não tem
+  gravação de referência: `422 voz_desconhecida`, como uma voz que não
+  existe.
+- **Na placa e pelo árbitro**: com outro trabalho rodando, `503 gpu_ocupada`
+  com `Retry-After`. Reagende, não desista. Carregar o modelo leva alguns
+  segundos a cada conversão.
+- Erros:
+  - `422 pedido_invalido`: áudio vazio, ilegível ou com mais de
+    `VOZ_CONVERSAO_SEGUNDOS_MAXIMOS` (120 s);
+  - `413 arquivo_grande`: acima de `VOZ_CONVERSAO_MAXIMO_BYTES` (25 MB);
+  - `404 conversao_desligada`: a rota não está ligada;
+  - `500 falha_na_voz`, `503 timeout`, como na voz.
+- **O modelo**: o conversor do Chatterbox (MIT), sem treino. Ele põe uma
+  marca d'água inaudível em todo áudio que sai dele.
+- **Instalação:** `./deploy/instalar_voz.sh --conversao` (ou
+  `VOZ_CONVERSAO=sim` no `.env`), que cria `voz/conversao/` e baixa o modelo
+  (~1 GB). Depois, `VOZ_CONVERSAO=sim` e reinicie.
+- `/health/` publica `rotas.conversao_de_voz` e, ligada, `voz.conversao`.
+
 ### Saúde
 
 `GET /health/`, sem credencial. Use para diagnóstico, não como teste de
 disponibilidade antes de cada pedido: entre o `/health/` e o pedido a placa
 pode ter sido tomada, e você teria feito duas viagens para chegar no mesmo
 503.
+
+Resposta: `contrato/saude-resposta.json`.
+
+**Ele nunca devolve 500.** Um bloco que falha ao ser coletado vira
+`{"erro": "<tipo>: <mensagem>"}` no lugar do bloco, com HTTP 200 — o processo
+está de pé, e é isso que o 200 afirma. Um diagnóstico que estoura não serve
+para descobrir o que estourou. Trate um bloco com `erro` como "esta parte está
+doente", e não como "o worker caiu".
+
+Três campos valem alarme do seu lado:
+
+- **`ha_segundos` acima de ~120 com `ocupante: "texto"`** — trabalho preso. O
+  lock não tem watchdog: se a chamada ao Ollama pendurar, ele fica retido até
+  `OLLAMA_TIMEOUT` e todo mundo leva 503 nesse tempo;
+- **um bloco com `erro`** — a máquina está degradada de um jeito que os 200 não
+  denunciam;
+- **`memoria.swap_mb` acima de zero** — o processo do worker está no swap, e
+  isso não aparece como erro em lugar nenhum: aparece como lentidão que você vai
+  atribuir ao modelo. O worker retém RAM por desenho (os pesos do modelo de
+  imagem ficam na RAM para o pico de VRAM caber ao lado do Ollama), então é ele
+  que vai para o swap primeiro. Se isso acontecer com frequência, é conversa
+  com o dono da máquina — o README tem a seção **Convivendo com a máquina**.
 
 ## Mantendo o contrato honesto
 
@@ -390,15 +1197,231 @@ Compare de vez em quando — ou num teste, se o seu CI alcança o worker. Versã
 maior diferente significa que algo mudou de forma incompatível, e há uma seção
 nova neste arquivo explicando o quê.
 
+Acréscimos e um ajuste de cabeçalho. Nada some e nada muda de tipo, mas dois
+pontos merecem olhada:
+
+- **`error.code == "timeout"` agora acontece em `/v1/chat/completions`.** Antes
+  era documentado e inalcançável: um pedido que estourava o orçamento chegava
+  como `ollama_indisponivel`, indistinguível de "o Ollama caiu". Se você já
+  trata o código, não precisa fazer nada — ele só passou a aparecer;
+- **o 503 de código `timeout` não traz mais `Retry-After`.** Se você lê o
+  cabeçalho com acesso direto (`headers["Retry-After"]`), troque por
+  `headers.get("Retry-After", 60)`. Afeta também `/v1/images/generations`, onde
+  esse código já ocorria;
+- **um 5xx vindo do Ollama agora sai envelopado** como `ollama_indisponivel`,
+  com `Retry-After`. Antes ele era repassado cru, sem `error.code` e sem
+  cabeçalho — a única forma de 503 que saía daqui sem nada para decidir;
+- **`/health/` ganhou `ollama.carregados_detalhe`** e passou a nunca responder
+  500. `ollama.carregados` continua sendo a lista de nomes, intocada;
+## O que mudou na 2.17
+
+- **acabamento de locução** em toda fala de `/v1/audio/speech` e
+  `/v1/audio/convert` (`VOZ_ACABAMENTO`, ligado de padrão): volume normalizado
+  em -16 LUFS. Quem normalizava do seu lado pode continuar: o resultado é o
+  mesmo;
+- `/health/` ganhou `voz.acabamento` (`ligado`, `ffmpeg`).
+
+## O que mudou na 2.16
+
+- **rota nova, `/v1/audio/convert`**: a gravação de uma pessoa no timbre de
+  uma voz `qwen:<nome>`, com a entonação de quem gravou. Veja **Conversão de
+  voz**;
+- `/health/` ganhou `rotas.conversao_de_voz` e, com a rota ligada,
+  `voz.conversao`.
+
+## O que mudou na 2.15
+
+- `/v1/audio/speech` aceita `instructions`, `previous_text` e `next_text` e os
+  ignora (antes também ignorava, sem dizer);
+- `/health/` ganhou `voz.campos`: o que cada um desses campos muda (hoje,
+  nada).
+
+## O que mudou na 2.14
+
+- **voz pelo Qwen3-TTS** (`qwen:<nome>`), na placa e pelo árbitro: pode levar
+  `503 gpu_ocupada`, e cada fala leva de segundos a um minuto. Veja **Voz**;
+- **uma voz que não é do worker leva `422 voz_desconhecida`**, em vez de virar
+  a padrão. Vazio e os nomes da OpenAI continuam virando a padrão;
+- rotas novas: `GET /v1/audio/voices` (`contrato/vozes-resposta.json`) e
+  `POST /v1/audio/voices` (criar uma voz);
+- `/health/` ganhou `voz.motores` e, com o Qwen ligado, `voz.qwen` (modelo,
+  dispositivo, idioma, vozes) e `motor` em `voz.ultimo`.
+
+## O que mudou na 2.13
+
+- **`/v1/videos` passa a ler o `model`**: `framepack` (bf16) ou
+  `framepack-fp8`; fora do catálogo, o padrão da máquina. O usado volta em
+  `model` no trabalho (antes, sempre `framepack`);
+- `/health/` ganhou `animacao.modelos`, `animacao.modelo_padrao`,
+  `animacao.ultimo.modelo` e `model` em cada `animacao.em_curso`.
+
+## O que mudou na 2.12
+
+- **rota nova, `/v1/images/edits`**: imagem com personagens de referência
+  (IP-Adapter, no modelo de referência) e com foto preservada pela máscara.
+  Veja **Imagem com referência e foto na cena**;
+- **`/v1/videos` aceita `seed`** e a devolve no trabalho (sorteada, se não
+  veio), e **respeita `size`** em vez de gerar na resolução da máquina;
+- `/health/` ganhou `rotas.imagem_edicao`, `imagem.carregado_perfil` e
+  `imagem.referencia`.
+
+## O que mudou na 2.11
+
+- **rota nova, `/v1/audio/speech`** (voz pelo Kokoro, na CPU), desligada de
+  padrão (`VOZ_ATIVA`). Veja **Voz**;
+- `/health/` ganhou `rotas.voz` e, com a rota ligada, o bloco `voz`.
+
+## O que mudou na 2.10
+
+- **rota nova, `/v1/videos`** (animação de uma imagem, pelo FramePack),
+  desligada de padrão (`ANIMACAO_ATIVA`). Veja **Animação**;
+- `/health/` ganhou `rotas.animacao` e, com a rota ligada, o bloco `animacao`.
+
+## O que mudou na 2.9
+
+- **cabeçalho novo, `X-PubliBot-Contexto`**, em `/v1/chat/completions`: a
+  janela que o pedido precisa. Veja **A janela de contexto, por pedido**;
+- **todo pedido de texto passa a levar `num_ctx`** (o padrão da máquina,
+  16384, sem cabeçalho), e por isso vai pelo `/api/chat` nativo. A forma da
+  resposta não muda;
+- **400 de contexto excedido** sai na forma do llama.cpp
+  (`exceed_context_size_error`, `n_prompt_tokens`, `n_ctx`);
+- `/health/` ganhou `ollama.contexto` (`padrao`, `atual`, `maximo`,
+  `segue_cabecalho`).
+
+## O que mudou na 2.8
+
+Só acréscimos:
+
+- **rota nova, `POST /v1/embeddings`**: vetorização de passagens com o
+  `multilingual-e5-large`, vetor igual ao do `fastembed==0.8.0`. Veja
+  **Vetorização**. Código novo de 503: `modelo_carregando` (adie);
+- **rota nova, `POST /v1/youtube/legenda`**, sem placa. Códigos novos: `404
+  sem_legenda`, `404 video_indisponivel`, `503 bloqueado`, `503
+  youtube_indisponivel`. Veja **Legenda do YouTube**;
+- `/health/` ganhou o bloco `vetorizacao`, `rotas.vetorizacao` e
+  `rotas.youtube`; `/v1/models` lista o modelo de vetorização.
+
+## O que mudou na 2.7
+
+Só acréscimos:
+
+- **rota nova, `POST /v1/audio/transcriptions`** (Whisper), no dialeto da
+  OpenAI. Veja **Transcrição de áudio**. Timeout sugerido: 1800 s;
+- **`/parse/` aceita `.docx`, `.pptx` e `.xlsx`** além de PDF. Outro formato,
+  que antes falhava lá dentro com `500`, agora volta `422`;
+- `/health/` ganhou o bloco `transcricao` e `rotas.transcricao`; `/v1/models`
+  lista o modelo do Whisper.
+
+## O que mudou na 2.6
+
+Três mudanças que pedem código do seu lado, todas na rota de imagem:
+
+- **HTTP 500 com `error.code` novo, `worker_travado`**, e ele é **falha**, não
+  adiamento. Um trabalho que passa de `imagem.tempo_travado` (900 s) faz o
+  worker responder isso e se encerrar. Antes ele ficava preso sem responder,
+  segurando a placa, até o seu timeout — e um cliente que tratou esse timeout
+  como "terminou" marcou como concluído um trabalho sem imagem. Veja **O
+  contrato do 500**;
+- **conexão cortada no meio de um pedido passou a ser falha**, não
+  adiamento: é o worker morto por memória. Conexão recusada continua adiável;
+- **suba o timeout de imagem para mais que 900 s** (sugestão: 960 s). Com os
+  300 s de antes você desistia antes do worker, e nunca recebia o 500.
+
+E duas que só podem aparecer:
+
+- **o worker não tem mais prompt negativo próprio.** Mande `negative_prompt`
+  no pedido se quiser um; ele é repassado como veio. Modelos destilados
+  (`imagem.guidance` 0 no `/health/`) o ignoram;
+- **cada lado do `size` precisa ser múltiplo de 16**, e não de 8. Toda a grade
+  de treino já é; `1200x632`, que passava, agora volta `422`;
+- `/health/` ganhou `imagem.precisao`, `imagem.quantizacao` e
+  `imagem.tempo_travado`.
+
+## O que mudou na 2.5
+
+Nada muda no que você manda. Dois acréscimos no `/health/` e uma mudança de
+comportamento que você pode observar:
+
+- **`memoria`** novo, com `rss_mb` e `swap_mb` do processo do worker. Vale
+  alarme: veja a seção **Saúde**;
+- **`conversao.ocioso_segundos`** novo, e **o Docling passou a ser descarregado
+  depois de ocioso** (`CONVERSAO_OCIOSO_SEGUNDOS`, 900 s). Antes ele ficava
+  residente para sempre depois da primeira conversão. Para você isso significa
+  que `conversao.carregado` agora volta a `false` sozinho, e que **um `/parse/`
+  depois de um intervalo longo paga dezenas de segundos de recarga** — o mesmo
+  que já acontecia com a primeira conversão após um restart. Se isso atrapalhar
+  o seu lote, o dono da máquina sobe a variável.
+
+## O que mudou na 2.4
+
+Só a rota de imagem:
+
+- **o teto por lado subiu de 1344 para 1536**, para as proporções largas da
+  grade de treino (`1536x640`) serem pedíveis;
+- **teto de área novo**, 1,2 MP (`imagem.area_maxima_mp`). Necessário: sozinho,
+  um teto de lado em 1536 deixaria passar `1536x1536`, o dobro da área de
+  treino. O `422` diz o tamanho da grade mais próximo;
+- **`/health/` publica `imagem.grade`**, a lista de proporções treinadas.
+  Valide contra ela em vez de manter uma cópia;
+- **tamanho fora da grade vira aviso no journal**, e não recusa.
+
+## O que mudou na 2.3
+
+Só a rota de imagem, e é sobre qualidade:
+
+- **o tamanho padrão passou de `1024x576` para `1344x768`**, que é a proporção
+  16:9 que o SDXL conhece do treino. Afeta você só se você **omite** `size`;
+- **o teto por lado subiu de 1024 para 1344**, para a proporção acima ser
+  pedível. Nada que passava antes deixou de passar;
+- **o prompt negativo do worker estava em português e não fazia nada.** Agora
+  está em inglês. Veja o aviso sobre o **seu** prompt na seção de imagem;
+- `/health/` publica `imagem.vae`, `imagem.amostrador`, `imagem.guidance` e
+  `imagem.lado_maximo`, que são os ajustes que decidem qualidade.
+
+## O que mudou na 2.2
+
+- **modelo ausente passou a ser baixado sozinho**, em segundo plano e sem
+  tomar a placa. O pedido que disparou recebe `503 baixando_modelo`; um
+  download que falha vira `404`, para o cliente desistir em vez de reagendar.
+  Código novo — se o seu cliente trata código desconhecido como adiável com
+  teto (como este guia manda), ele já funciona sem mudança;
+- **`/health/` ganhou `ollama.baixando`**, com o progresso de cada download.
+
+## O que mudou na 2.1
+
+- **`options` passou a funcionar.** `options.num_ctx` e `options.num_predict`
+  eram descartados em silêncio pela camada compatível do Ollama; agora um
+  pedido que traz `options` (ou `keep_alive`) é roteado pelo dialeto nativo e
+  traduzido de volta. A forma da resposta não muda, e quem não manda `options`
+  segue pelo caminho antigo sem diferença nenhuma;
+- **`OLLAMA_KEEP_ALIVE` (a variável do worker) foi removido.** Ele era injetado
+  no corpo e descartado pela camada compatível: parecia ativo e não tinha
+  efeito nenhum. Um `keep_alive` que **você** mandar no pedido é honrado, porque
+  ele leva o pedido pelo nativo; a política da máquina se ajusta no Ollama.
+
 ## Checklist
 
 - [ ] URL base aponta para o worker, não para o Ollama
 - [ ] `Authorization: Bearer` em toda chamada (menos `/health/`)
 - [ ] 503 **adia**, não falha, e não consome tentativa
-- [ ] `Retry-After` é respeitado
+- [ ] `Retry-After` é lido com `.get(..., 60)`, e tratado como piso
+- [ ] **Teto de adiamentos**, senão um pedido impossível gira para sempre
 - [ ] `error.code == "timeout"` não é repetido igual
+- [ ] `error.code` desconhecido **adia com teto**, nunca falha definitiva
+- [ ] `baixando_modelo` adia; o **404** que vem depois dele faz o trabalho falhar
+- [ ] 400/404/422 **falham**, não adiam
+- [ ] **500 marca o trabalho como falho** e alerta; nunca adia, nunca "concluído"
+- [ ] Conexão **cortada** no meio é falha; conexão **recusada** adia com teto
+- [ ] Timeout de imagem **maior que `imagem.tempo_travado`** (960 s)
 - [ ] Sem `stream: true`
-- [ ] Timeouts generosos
+- [ ] `X-PubliBot-Contexto` em todo pedido de texto; `400 exceed_context_size_error` é falha (reduza o pedido)
+- [ ] Transcrição com timeout de **1800 s**, e `503 timeout` nela é falha, não adiamento
+- [ ] Vetorização: `503 modelo_carregando` **adia**; `model` igual ao do `/health/`; conformidade conferida antes de ligar
+- [ ] Legenda: `404 video_indisponivel` desiste; `503 bloqueado`/`youtube_indisponivel` tenta do servidor
+- [ ] Timeout do cliente **maior** que `OLLAMA_TIMEOUT`, não igual
+- [ ] Janela de contexto por pedido em `options.num_ctx` (não precisa de Modelfile)
+- [ ] Truncamento monitorado por `usage.prompt_tokens`
 - [ ] Exemplos de `contrato/` copiados para os seus testes
 - [ ] Reagendar, nunca `sleep`
 - [ ] Se usa modelo por cliente: afinidade é dica, e com limite de sequência

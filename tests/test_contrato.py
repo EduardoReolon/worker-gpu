@@ -78,6 +78,7 @@ def cliente(worker, monkeypatch):
     )
     monkeypatch.setattr(conversao, "obter_conversor", lambda: _Conversor())
     monkeypatch.setattr(ollama, "modelos_carregados", list)
+    monkeypatch.setattr(ollama, "modelos_carregados_detalhe", list)
     monkeypatch.setattr(ollama, "esta_de_pe", lambda: True)
     return TestClient(worker.app)
 
@@ -105,10 +106,98 @@ def test_a_resposta_de_texto_tem_a_forma_publicada(cliente, cabecalhos):
     assert _forma(_exemplo("texto-resposta.json")) <= _forma(resposta.json())
 
 
+def test_a_resposta_de_edicao_tem_a_forma_publicada(cliente, cabecalhos, monkeypatch):
+    import io
+
+    PIL = pytest.importorskip("PIL")
+    from PIL import Image
+
+    import edicao
+    import imagem
+    import ollama
+
+    monkeypatch.setattr(edicao, "editar_imagens", lambda dispositivo, **a: [b"png"])
+    monkeypatch.setattr(imagem, "resolver_dispositivo", lambda: "cuda")
+    monkeypatch.setattr(imagem, "IMAGEM_REFERENCIA_MODELO", "")
+    monkeypatch.setattr(ollama, "descarregar_tudo", lambda: None)
+    memoria = io.BytesIO()
+    Image.new("RGB", (8, 8)).save(memoria, format="PNG")
+    assert PIL
+
+    resposta = cliente.post(
+        "/v1/images/edits",
+        data={"prompt": "x", "size": "720x1280"},
+        files=[("reference_image", ("r.png", memoria.getvalue(), "image/png"))],
+        headers=cabecalhos,
+    )
+
+    assert resposta.status_code == 200
+    assert _forma(_exemplo("imagem-edicao-resposta.json")) <= _forma(resposta.json())
+
+
 def test_a_resposta_de_imagem_tem_a_forma_publicada(cliente, cabecalhos):
     resposta = cliente.post("/v1/images/generations", json={"prompt": "x"}, headers=cabecalhos)
 
     assert _forma(_exemplo("imagem-resposta.json")) <= _forma(resposta.json())
+
+
+def test_a_resposta_de_transcricao_tem_a_forma_publicada(cliente, cabecalhos, monkeypatch):
+    import json as _json
+
+    import ollama
+    import transcricao
+
+    exemplo = _json.loads((CONTRATO / "transcricao-resposta.json").read_text(encoding="utf-8"))
+    corpo = {chave: valor for chave, valor in exemplo.items() if not chave.startswith("_")}
+    monkeypatch.setattr(transcricao, "transcrever", lambda *argumentos: corpo)
+    monkeypatch.setattr(transcricao, "resolver_dispositivo", lambda: "cuda")
+    monkeypatch.setattr(ollama, "descarregar_tudo", lambda: None)
+
+    resposta = cliente.post(
+        "/v1/audio/transcriptions",
+        files={"file": ("a.mp3", b"ID3", "audio/mpeg")},
+        data={"response_format": "verbose_json"},
+        headers=cabecalhos,
+    )
+
+    assert resposta.status_code == 200
+    assert _forma(_exemplo("transcricao-resposta.json")) <= _forma(resposta.json())
+
+
+def test_a_resposta_de_vetorizacao_tem_a_forma_publicada(cliente, cabecalhos, monkeypatch):
+    import vetorizacao
+
+    monkeypatch.setattr(vetorizacao, "modelo_esta_no_disco", lambda: True)
+    monkeypatch.setattr(vetorizacao, "resolver_dispositivo", lambda: "cuda")
+    monkeypatch.setattr(
+        vetorizacao, "vetorizar", lambda dispositivo, textos: ([[0.1] * 1024] * len(textos), 5)
+    )
+
+    resposta = cliente.post(
+        "/v1/embeddings",
+        json={"model": "intfloat/multilingual-e5-large", "input": ["passage: a", "passage: b"]},
+        headers=cabecalhos,
+    )
+
+    assert resposta.status_code == 200
+    assert _forma(_exemplo("vetorizacao-resposta.json")) <= _forma(resposta.json())
+
+
+def test_a_resposta_de_legenda_tem_a_forma_publicada(cliente, cabecalhos, monkeypatch):
+    import types
+
+    import youtube
+
+    legenda = types.SimpleNamespace(language_code="pt", is_generated=True)
+    trechos = [types.SimpleNamespace(start=0.0, duration=4.2, text="Ola.")]
+    monkeypatch.setattr(youtube, "buscar_legenda", lambda video, idiomas: (legenda, trechos))
+
+    resposta = cliente.post(
+        "/v1/youtube/legenda", json={"video_id": "dQw4w9WgXcQ"}, headers=cabecalhos
+    )
+
+    assert resposta.status_code == 200
+    assert _forma(_exemplo("youtube-legenda-resposta.json")) <= _forma(resposta.json())
 
 
 def test_a_resposta_de_conversao_tem_a_forma_publicada(cliente, cabecalhos):
@@ -138,6 +227,27 @@ def test_o_503_tem_a_forma_publicada(worker, cabecalhos):
     assert resposta.status_code == 503
     assert _forma(_exemplo("ocupada-resposta.json")) <= _forma(resposta.json())
     assert int(resposta.headers["Retry-After"]) > 0
+
+
+def test_o_500_de_worker_travado_tem_a_forma_publicada(worker, cabecalhos, monkeypatch):
+    import threading
+
+    import imagem
+
+    solta = threading.Event()
+    monkeypatch.setattr(imagem, "IMAGEM_TEMPO_TRAVADO", 0.2)
+    monkeypatch.setattr(imagem, "gerar_imagens", lambda *argumentos: solta.wait(5))
+    monkeypatch.setattr(imagem, "_morrer_em_seguida", lambda: None)
+
+    try:
+        resposta = TestClient(worker.app).post(
+            "/v1/images/generations", json={"prompt": "x"}, headers=cabecalhos
+        )
+    finally:
+        solta.set()
+
+    assert resposta.status_code == 500
+    assert _forma(_exemplo("falha-resposta.json")) <= _forma(resposta.json())
 
 
 def test_o_503_diz_qual_modelo_esta_na_placa(worker, cabecalhos):
@@ -228,3 +338,146 @@ def test_a_versao_do_contrato_aparece_no_health(cliente):
     }
 
     assert nos_exemplos == {publicada}
+
+
+def test_a_resposta_do_health_tem_a_forma_publicada(worker, monkeypatch):
+    """O `/health/` e o endpoint que todo cliente consulta para diagnosticar,
+    e era o unico sem exemplo em `contrato/`.
+
+    A consequencia apareceu em uso: quando as tres rotas viraram um servico
+    so, o estado passou a vir aninhado e `busy` virou `ocupada` na raiz. Um
+    cliente continuou lendo as chaves antigas, `dict.get` devolveu `None`, e
+    os avisos que justificavam o diagnostico dele sumiram — sem erro nenhum,
+    por semanas.
+
+    Com o exemplo publicado, uma mudanca de forma quebra AQUI, na suite do
+    worker, em vez de quebrar um cliente em producao. Em especial: trocar
+    `ollama.carregados` de lista de nomes para lista de objetos passa a ser
+    uma falha visivel, e nao uma surpresa no outro repositorio.
+    """
+    import modelos
+    import ollama
+
+    monkeypatch.setattr(
+        ollama,
+        "modelos_carregados_detalhe",
+        lambda: [{"name": "qwen2.5:7b-instruct", "context_length": 4096}],
+    )
+    monkeypatch.setattr(ollama, "esta_de_pe", lambda: True)
+    # Um download em curso, para o exemplo poder descrever a FORMA do item.
+    # Uma lista vazia no exemplo nao descreveria nada.
+    monkeypatch.setattr(
+        modelos,
+        "estado",
+        lambda: [{"modelo": "llama3.1:8b", "porcento": 37.4, "ha_segundos": 95}],
+    )
+
+    resposta = TestClient(worker.app).get("/health/")
+
+    assert resposta.status_code == 200
+    assert _forma(_exemplo("saude-resposta.json")) <= _forma(resposta.json())
+
+
+def test_o_health_nunca_responde_500(worker, monkeypatch):
+    """A promessa que o exemplo de `saude-resposta.json` faz por escrito.
+
+    Vale para todos os blocos ao mesmo tempo: e o cenario de maquina doente,
+    que e exatamente quando alguem abre o `/health/`.
+    """
+    import conversao
+    import imagem
+    import ollama
+
+    def explodir(*a, **k):
+        raise RuntimeError("a maquina esta ruim")
+
+    monkeypatch.setattr(ollama, "modelos_carregados_detalhe", explodir)
+    monkeypatch.setattr(imagem, "estado", explodir)
+    monkeypatch.setattr(conversao, "estado", explodir)
+
+    resposta = TestClient(worker.app).get("/health/")
+
+    assert resposta.status_code == 200
+    corpo = resposta.json()
+    assert corpo["status"] == "ok"
+    assert all("erro" in corpo[bloco] for bloco in ("ollama", "imagem", "conversao"))
+
+
+def test_o_timeout_e_o_unico_503_sem_retry_after(worker, cabecalhos, monkeypatch):
+    """A regra que `ocupada-resposta.json` publica: todo 503 tem
+    `error.code`, e todos trazem `Retry-After` menos o `timeout`."""
+    import ollama
+
+    def estourar(*a, **k):
+        raise ollama.OllamaDemorouDemais("passou do orcamento")
+
+    monkeypatch.setattr(ollama, "conversar", estourar)
+    corpo = {"messages": [{"role": "user", "content": "oi"}]}
+    cliente_http = TestClient(worker.app)
+
+    demorou = cliente_http.post("/v1/chat/completions", json=corpo, headers=cabecalhos)
+    assert demorou.json()["error"]["code"] == "timeout"
+    assert "Retry-After" not in demorou.headers
+
+    monkeypatch.setattr(
+        ollama, "conversar", lambda c, cab: (_ for _ in ()).throw(ollama.OllamaIndisponivel("fora"))
+    )
+    caiu = cliente_http.post("/v1/chat/completions", json=corpo, headers=cabecalhos)
+    assert caiu.json()["error"]["code"] == "ollama_indisponivel"
+    assert "Retry-After" in caiu.headers
+
+
+def test_a_forma_publicada_e_a_mesma_pelos_dois_caminhos(worker, cabecalhos, monkeypatch):
+    """A garantia central da traducao: quem integra copiou UM exemplo e nao
+    tem como saber por qual dialeto o pedido dele foi.
+
+    Um pedido com `options` vai pelo `/api/chat`, cuja resposta tem outra forma
+    (`message` na raiz, `prompt_eval_count` em vez de `usage`). Se a traducao
+    de volta divergir em um campo, o cliente quebra sem nada no worker acusar —
+    e quebra so nos pedidos que pedem janela de contexto.
+    """
+    import httpx
+
+    import ollama
+
+    nativa = {
+        "model": "qwen2.5:7b-instruct",
+        "message": {"role": "assistant", "content": "O texto gerado."},
+        "done_reason": "stop",
+        "prompt_eval_count": 120,
+        "eval_count": 340,
+    }
+    compativel = {
+        "id": "chatcmpl-1",
+        "object": "chat.completion",
+        "model": "qwen2.5:7b-instruct",
+        "choices": [
+            {"index": 0, "message": {"role": "assistant", "content": "x"}, "finish_reason": "stop"}
+        ],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+    }
+
+    def post(url, **kwargs):
+        return httpx.Response(200, json=nativa if url == "/api/chat" else compativel)
+
+    monkeypatch.setattr(ollama._obter_cliente(), "post", post)
+    cliente_http = TestClient(worker.app)
+    esperada = _forma(_exemplo("texto-resposta.json"))
+
+    pelo_antigo = cliente_http.post(
+        "/v1/chat/completions",
+        json={"model": "qwen2.5:7b-instruct", "messages": [{"role": "user", "content": "oi"}]},
+        headers=cabecalhos,
+    )
+    pelo_nativo = cliente_http.post(
+        "/v1/chat/completions",
+        json={
+            "model": "qwen2.5:7b-instruct",
+            "messages": [{"role": "user", "content": "oi"}],
+            "options": {"num_ctx": 16384},
+        },
+        headers=cabecalhos,
+    )
+
+    assert esperada <= _forma(pelo_antigo.json())
+    assert esperada <= _forma(pelo_nativo.json())

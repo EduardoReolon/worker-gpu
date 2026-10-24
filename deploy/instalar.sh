@@ -42,6 +42,15 @@ if [[ ! -f "$RAIZ/.env" ]]; then
     exit 1
 fi
 
+# Um `.env` com CRLF (copiado de um `.env.example` que o git converteu, ou
+# salvo por um editor do Windows) poe um `\r` no fim de cada valor. O systemd
+# nao o tira: o uvicorn recebe `--port "8090\r"` e morre no boot.
+if grep -q $'\r' "$RAIZ/.env"; then
+    echo "ERRO: $RAIZ/.env tem fim de linha CRLF (Windows)." >&2
+    echo "  sed -i 's/\\r\$//' $RAIZ/.env" >&2
+    exit 1
+fi
+
 # Lido aqui, e nao no fim: as conferencias abaixo precisam dos valores, e
 # conferir depois de instalar a unit ja e tarde.
 set -a; source <(grep -E '^[A-Z_]+=' "$RAIZ/.env"); set +a
@@ -123,6 +132,76 @@ else
     mkdir -p "$(dirname "$DESTINO")"
 fi
 
+# Limites de memoria, do `.env`. Eles moram na unit e nao dao para vir por
+# `${}`: o systemd nao expande variaveis de ambiente em `MemoryMax=`. Entao o
+# instalador os substitui aqui, e o `.env` continua sendo o unico lugar que se
+# edita.
+#
+# A ULTIMA ocorrencia vence, como o systemd faz com EnvironmentFile — um `.env`
+# com a chave repetida (`cat >> .env`) tem que valer o mesmo nas duas leituras.
+_do_env() {
+    grep -E "^${1}=" "$RAIZ/.env" 2>/dev/null | tail -1 | cut -d= -f2- |
+        tr -d '"'"'"' \t\r' || true
+}
+
+MEMORIA_FREIO="$(_do_env WORKER_MEMORY_HIGH)"
+MEMORIA_PAREDE="$(_do_env WORKER_MEMORY_MAX)"
+# Sem freio por padrao: acima do `MemoryHigh` o kernel estrangula em vez de
+# matar, e um worker estrangulado segura a placa sem responder a ninguem.
+MEMORIA_FREIO="${MEMORIA_FREIO:-infinity}"
+MEMORIA_PAREDE="${MEMORIA_PAREDE:-18G}"
+
+echo "==> Limites de memoria: freio $MEMORIA_FREIO, parede $MEMORIA_PAREDE"
+echo "    (WORKER_MEMORY_HIGH / WORKER_MEMORY_MAX no .env)"
+echo "    Acima da parede o kernel mata, o Restart=always sobe de novo em 10s"
+echo "    e o aviso de queda dispara. Veja 'Convivendo com a maquina'."
+if [[ "$MEMORIA_FREIO" != "infinity" ]]; then
+    echo "    AVISO: com freio, o worker pode ficar estrangulado e sem responder," >&2
+    echo "    em vez de morrer. Apague WORKER_MEMORY_HIGH do .env para desligar." >&2
+fi
+
+# Aviso de queda, tambem do `.env`. Antes ele se ligava descomentando uma linha
+# no molde — que e arquivo versionado, entao o `git pull` seguinte recusava ou
+# conflitava. A chave mora no `.env`, junto com o resto do que e desta maquina.
+AVISO="$(_do_env WORKER_AVISO_QUEDA)"
+AVISO="${AVISO:-nao}"
+LINHA_DE_AVISO="# (aviso de queda desligado: WORKER_AVISO_QUEDA=sim no .env)"
+
+if [[ "$AVISO" == "sim" ]]; then
+    # O aviso e uma notificacao na SUA sessao grafica. Uma unit de sistema roda
+    # fora dela, e o `notify-send` como root nao tem para quem mostrar — ligar
+    # assim seria um aviso que nunca aparece, que e pior que nenhum.
+    if [[ "$ESCOPO" == "sistema" ]]; then
+        echo "ERRO: WORKER_AVISO_QUEDA=sim so vale para a unit de usuario." >&2
+        echo "  Instale sem --sistema, ou ponha WORKER_AVISO_QUEDA=nao." >&2
+        exit 1
+    fi
+    if ! command -v notify-send >/dev/null 2>&1; then
+        echo "ERRO: WORKER_AVISO_QUEDA=sim, mas notify-send nao existe." >&2
+        echo "  Debian/Ubuntu: sudo apt install libnotify-bin" >&2
+        echo "  Fedora:        sudo dnf install libnotify" >&2
+        exit 1
+    fi
+    install -m 0644 "$RAIZ/deploy/worker-gpu-aviso.service" \
+        "$(dirname "$DESTINO")/worker-gpu-aviso.service"
+    LINHA_DE_AVISO="OnFailure=worker-gpu-aviso.service"
+    echo "==> Aviso de queda ligado"
+    echo "    $(dirname "$DESTINO")/worker-gpu-aviso.service"
+elif [[ "$AVISO" != "nao" ]]; then
+    echo "ERRO: WORKER_AVISO_QUEDA='$AVISO' em $RAIZ/.env. Use sim ou nao." >&2
+    exit 1
+fi
+
+# A animacao mora num ambiente a parte (FramePack). Com ela ligada no `.env`,
+# o ambiente e conferido — e instalado, se faltar —, para uma maquina
+# formatada voltar inteira so com este script.
+if [[ "${ANIMACAO_ATIVA:-nao}" =~ ^(1|true|yes|sim|on)$ ]]; then
+    "$RAIZ/deploy/instalar_animacao.sh"
+fi
+if [[ "${VOZ_ATIVA:-nao}" =~ ^(1|true|yes|sim|on)$ ]]; then
+    "$RAIZ/deploy/instalar_voz.sh"
+fi
+
 echo "==> Gerando a unit ($ESCOPO)"
 TEMPORARIO="$(mktemp)"
 trap 'rm -f "$TEMPORARIO"' EXIT
@@ -132,6 +211,9 @@ trap 'rm -f "$TEMPORARIO"' EXIT
 sed -e "s|RAIZ|$RAIZ|g" \
     -e "s|LINHA_DE_USUARIO|$LINHA_DE_USUARIO|" \
     -e "s|ALVO_DE_INSTALACAO|$ALVO|" \
+    -e "s|LINHA_DE_AVISO|$LINHA_DE_AVISO|" \
+    -e "s|MEMORIA_FREIO|$MEMORIA_FREIO|" \
+    -e "s|MEMORIA_PAREDE|$MEMORIA_PAREDE|" \
     "$RAIZ/deploy/worker-gpu.service" > "$TEMPORARIO"
 
 "${INSTALAR[@]}" "$TEMPORARIO" "$DESTINO"
@@ -175,6 +257,22 @@ if [[ "$ESCOPO" == "sistema" ]]; then
     sudo journalctl -u worker-gpu.service -n 30 --no-pager 2>&1 | sed 's/^/    /' || true
 else
     journalctl --user -u worker-gpu.service -n 30 --no-pager 2>&1 | sed 's/^/    /' || true
+fi
+echo >&2
+
+# Quem esta na porta. O journal diz por que o worker nao subiu; isto diz se o
+# motivo e que o lugar ja estava ocupado — e a sonda de endereco la em cima nao
+# responde essa pergunta, porque ela faz `bind` na porta ZERO: confere o
+# endereco, nunca a porta. Numa reinstalacao a porta e legitimamente nossa, e
+# por isso a sonda pode continuar como esta; na FALHA, saber de quem ela e
+# separa "meu processo antigo nao morreu" de "outro servico chegou primeiro".
+echo "  Quem esta escutando na porta ${BIND_PORT}:" >&2
+if command -v ss >/dev/null 2>&1; then
+    ss -ltnp 2>/dev/null | grep ":${BIND_PORT}\b" | sed 's/^/    /' >&2 || echo "    (ninguem)" >&2
+elif command -v lsof >/dev/null 2>&1; then
+    lsof -iTCP:"${BIND_PORT}" -sTCP:LISTEN -P -n 2>/dev/null | sed 's/^/    /' >&2 || echo "    (ninguem)" >&2
+else
+    echo "    (nem ss nem lsof nesta maquina)" >&2
 fi
 echo >&2
 echo "  A unit ficou habilitada e o systemd vai reinicia-la a cada 10s." >&2
