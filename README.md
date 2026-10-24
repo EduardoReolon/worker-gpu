@@ -573,3 +573,12 @@ clientes que só veem JSON.
 
 `contrato/` guarda os exemplos de resposta que os clientes copiam. Os testes
 conferem que as respostas reais ainda têm aquela forma.
+
+## Backup (antes de formatar)
+
+O que não está no git e se perde ao formatar: o `.env`, as vozes
+(`voz/vozes/`) e as medições. `./deploy/backup.sh` junta os três num
+`.tar.gz`; `./deploy/backup.sh --agendar` faz isso toda semana em
+`BACKUP_DESTINO` (do `.env`), que deve ficar fora deste disco. Para
+restaurar, depois de clonar de novo: `tar xzf <arquivo> -C <pasta do worker>`
+e `./deploy/instalar.sh`.
