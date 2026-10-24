@@ -19,6 +19,9 @@
 # Se o texto vier com erro, corrija o .txt e crie com o comando que ele mostra.
 
 set -euo pipefail
+# Numeros com ponto (o ffmpeg escreve -57.5): num sistema em portugues, o
+# printf e o sort -g esperariam virgula e quebrariam.
+export LC_ALL=C
 
 if [[ $# -lt 2 ]]; then
     sed -n '3,19p' "$0" | sed 's/^# \{0,1\}//'
