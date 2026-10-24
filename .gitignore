@@ -14,8 +14,20 @@ __pycache__/
 # sobre outra.
 medicoes/
 
+# Saida da bancada de comparacao: dezenas de PNG por rodada, e a conclusao que
+# importa nao e a imagem — e a linha que voce escreve no `.env` depois de
+# olhar.
+bancada/
+
 # Cache de modelo, quando alguem aponta o HF_HOME para ca.
 .model_cache/
+
+# O FramePack (animacao): instalado pelo deploy/instalar_animacao.sh, com o venv
+# e os ~30 GB de modelos dele. E de outro projeto, nao deste repositorio.
+framepack/
+
+# O Kokoro (voz): instalado pelo deploy/instalar_voz.sh, com o venv dele.
+voz/
 
 # Caches de ferramenta.
 .ruff_cache/

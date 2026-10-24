@@ -1,0 +1,120 @@
+{
+  "_contrato_versao": "2.17",
+  "_rota": "GET /health/ (sem credencial, de proposito)",
+  "_nota": "Este endpoint NUNCA devolve 500. Um bloco que falha ao ser coletado vira {\"erro\": \"<tipo>: <mensagem>\"} no lugar do bloco, com HTTP 200 — o processo esta de pe, e e isso que o 200 afirma. Os blocos `imagem`, `conversao`, `transcricao` e `vetorizacao` so aparecem quando a rota correspondente esta ligada (veja `rotas`).",
+  "_nota_baixando": "Downloads de modelo em curso, normalmente lista vazia. Um download NAO aparece em `ocupada` porque nao usa a placa: ele e rede e disco, e a imagem e a conversao seguem funcionando enquanto ele acontece. Enquanto um modelo esta aqui, os pedidos dele levam 503 `baixando_modelo`.",
+  "_nota_carregados": "`carregados` e a lista de NOMES e continua sendo `list[str]`. `carregados_detalhe` e o registro do `/api/ps` do Ollama repassado; o worker garante que cada item tem `name`, e o RESTO das chaves e do Ollama e varia com a versao dele. `context_length` e a janela com que o modelo foi carregado — e uma dica de MAQUINA, nao confirmacao de que um pedido especifico rodou com ela.",
+  "status": "ok",
+  "service": "worker-gpu",
+  "contrato_versao": "2.17",
+  "ocupada": false,
+  "ocupante": null,
+  "modelo": null,
+  "ha_segundos": 0,
+  "_nota_memoria": "Memoria do PROCESSO do worker, em MB, lida do /proc/self/status. Nao e do sistema. Existe porque o worker retem RAM por desenho (enable_model_cpu_offload mantem os pesos do modelo de imagem na RAM), entao e ele que vai para o swap primeiro — nao o Ollama, cujos pesos sao arquivo mapeado e podem ser descartados sem escrever nada. `swap_mb` acima de zero tambem vira aviso no journal. Os campos podem faltar numa plataforma sem /proc.",
+  "memoria": {
+    "rss_mb": 5931.4,
+    "swap_mb": 0.0
+  },
+  "rotas": {
+    "texto": true,
+    "imagem": true,
+    "imagem_edicao": true,
+    "conversao": true,
+    "transcricao": true,
+    "vetorizacao": true,
+    "youtube": true,
+    "animacao": false,
+    "voz": false,
+    "conversao_de_voz": false
+  },
+  "ollama": {
+    "de_pe": true,
+    "carregados": ["qwen2.5:7b-instruct"],
+    "carregados_detalhe": [
+      {
+        "name": "qwen2.5:7b-instruct",
+        "context_length": 4096
+      }
+    ],
+    "baixando": [
+      {
+        "modelo": "llama3.1:8b",
+        "porcento": 37.4,
+        "ha_segundos": 95
+      }
+    ],
+    "contexto": {
+      "padrao": 16384,
+      "atual": 16384,
+      "maximo": 32768,
+      "segue_cabecalho": true
+    }
+  },
+  "_nota_grade": "`grade` sao as proporcoes em que o SDXL foi treinado, todas em torno de 1,05 MP. A lista real tem ~40 entradas; o exemplo mostra tres. Validar contra ELA, e nao contra uma copia no cliente. Tamanho fora da grade NAO e recusado (1200x640 passa), so avisado no journal — mas cada lado precisa ser multiplo de 16, entao o 1200x630 do `og:image` volta 422.",
+  "_nota_imagem": "`vae` e `amostrador` trazem \"(o do modelo)\" quando nao foram ajustados. Para um modelo da familia SDXL, `vae: \"(o do modelo)\"` e um defeito silencioso: o VAE do SDXL estoura em float16 e produz manchas e faixas de cor. O worker avisa no journal quando detecta isso.",
+  "imagem": {
+    "modelo": "stabilityai/stable-diffusion-xl-base-1.0",
+    "dispositivo": "auto",
+    "ultimo_dispositivo": "cuda",
+    "baixado": true,
+    "carregado": false,
+    "passos": 30,
+    "guidance": 6.0,
+    "vae": "madebyollin/sdxl-vae-fp16-fix",
+    "amostrador": "dpm++2m_karras",
+    "precisao": "float16",
+    "quantizacao": "nao",
+    "lado_maximo": 1536,
+    "area_maxima_mp": 1.2,
+    "grade": ["1024x1024", "1344x768", "1536x640"],
+    "permite_cpu": false,
+    "tempo_maximo": 600,
+    "tempo_travado": 900,
+    "carregado_perfil": null,
+    "referencia": {
+      "modelo": "SG161222/RealVisXL_V5.0",
+      "maximo": 3,
+      "camadas": "aparencia",
+      "ip_adapter": "h94/IP-Adapter/sdxl_models/ip-adapter-plus_sdxl_vit-h.safetensors",
+      "passos": 30,
+      "guidance": 6.0
+    }
+  },
+  "conversao": {
+    "dispositivo": "auto",
+    "ocr": false,
+    "threads": "auto",
+    "carregado": true,
+    "ocioso_segundos": 900
+  },
+  "_nota_transcricao": "`tempo_travado` e o prazo DURO de uma transcricao (carga + audio): passado ele, 500 `worker_travado` e o worker se encerra. O timeout do cliente precisa ser MAIOR que ele. `tempo_maximo` e o teto macio, conferido entre segmentos: passado ele, 503 `timeout`.",
+  "transcricao": {
+    "modelo": "large-v3",
+    "dispositivo": "auto",
+    "ultimo_dispositivo": "cuda",
+    "computacao": "int8_float16",
+    "vad": true,
+    "carregado": false,
+    "ocioso_segundos": 600,
+    "tempo_maximo": 1200,
+    "tempo_travado": 1500,
+    "max_bytes": 1073741824
+  },
+  "_nota_imagem_edicao": "`imagem.carregado_perfil` diz qual dos dois modelos de imagem esta carregado: `principal` (o de mais qualidade, para pedidos sem referencia) ou `referencia` (`imagem.referencia.modelo`, com IP-Adapter, para pedidos com `reference_image`); null quando nenhum. So um cabe por vez: alternar entre os dois custa uma recarga. `imagem.referencia.modelo` null: referencias desligadas, e um pedido com elas sai so pela descricao, com `avisos`.",
+  "_nota_vetorizacao": "`baixado` false e `baixando` true: o modelo esta descendo em segundo plano, e os pedidos levam 503 `modelo_carregando`. `erro_download` e a ultima falha de download, ou null. `descarregar_ollama` e `sim`, `nao` ou `se_faltar` (tenta ao lado do modelo de texto e so o descarrega se a VRAM nao couber).",
+  "vetorizacao": {
+    "modelo": "intfloat/multilingual-e5-large",
+    "dispositivo": "auto",
+    "ultimo_dispositivo": "cuda",
+    "precisao": "float32",
+    "baixado": true,
+    "baixando": false,
+    "erro_download": null,
+    "carregado": false,
+    "lote": 32,
+    "ocioso_segundos": 600,
+    "tempo_travado": 300,
+    "descarregar_ollama": "se_faltar"
+  }
+}

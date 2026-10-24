@@ -45,11 +45,25 @@ def _do_env() -> None:
     arquivo = RAIZ / ".env"
     if not arquivo.is_file():
         return
+    # Lidas TODAS antes de aplicar, e a ULTIMA ocorrencia de cada chave vence.
+    #
+    # E o que o systemd faz com `EnvironmentFile`, e precisa ser igual: com
+    # `setdefault` linha a linha a PRIMEIRA venceria, e um `.env` com a chave
+    # repetida — que e o que acontece quando alguem faz `cat >> .env` — poria
+    # esta ferramenta medindo uma configuracao e o servico rodando outra. Sem
+    # erro nenhum, e com a ferramenta jurando que mediu o que esta em uso.
+    do_arquivo: dict[str, str] = {}
     for linha in arquivo.read_text(encoding="utf-8").splitlines():
         limpa = linha.strip()
-        if limpa and not limpa.startswith("#") and "=" in limpa:
-            chave, _, valor = limpa.partition("=")
-            os.environ.setdefault(chave.strip(), valor.strip().strip('"').strip("'"))
+        if not limpa or limpa.startswith("#") or "=" not in limpa:
+            continue
+        chave, _, valor = limpa.partition("=")
+        do_arquivo[chave.strip()] = valor.strip().strip('"').strip("'")
+
+    # `setdefault` e nao atribuicao: uma variavel de verdade no ambiente manda
+    # mais que o arquivo, que e como se passa `IMAGEM_DEVICE=cpu ./bancada.py`.
+    for chave, valor in do_arquivo.items():
+        os.environ.setdefault(chave, valor)
 
 
 def _medidas(texto: str) -> tuple[int, int]:
